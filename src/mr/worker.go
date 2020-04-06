@@ -1,10 +1,12 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,17 +26,31 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	// infinite loop here
+	for {
+		// try get a job from master
+		req := RPCrequest{""}
+		res := RPCresponse{}
+		call("Master.getAJob", &req, &res)
+		// depend on the job type (4 types), do different things
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+		switch jobType := res.curJob.jobType; jobType {
+		case "hold":
+			continue
+		case "exit":
+			os.Exit(0) // exit with success
+		case "map":
+
+		case "reduce":
+		}
+
+	}
 
 }
 
