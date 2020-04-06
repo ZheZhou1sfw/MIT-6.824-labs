@@ -1,11 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
+	"strconv"
 )
 
 //
@@ -46,11 +49,52 @@ func Worker(mapf func(string, string) []KeyValue,
 		case "exit":
 			os.Exit(0) // exit with success
 		case "map":
-
+			doMap(&res.curJob, mapf)
 		case "reduce":
+			// doReduce(&res.curJob)
 		}
 
 	}
+
+}
+
+// doMap takes in an MrJob, output nReduce intermediate files for later use in reduce phase
+// Return type: Error. Nil means success
+func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
+	// open the file and get all kv in kva
+	content := readFileContent(mapJob.fileLoc)
+	kva := mapf(mapJob.fileLoc, string(content))
+
+	// assign kv according to ihash % nReduce to different intermediate files
+	kvaArray := make([][]KeyValue, mapJob.nReduce)
+	for _, kv := range kva {
+		targetIdx := ihash(kv.Key) % mapJob.nReduce
+		if kvaArray[targetIdx] == nil {
+			kvaArray[targetIdx] = make([]KeyValue, len(kva))
+		}
+		kvaArray[targetIdx] = append(kvaArray[targetIdx], kv)
+	}
+
+	// output these intermediate files
+	for i := 0; i < mapJob.nReduce; i++ {
+		interFile := getIntermediate(mapJob.fileName, mapJob.ID, i)
+		curKva := kvaArray[i]
+		fileHandle, err := openOrCreate(interFile)
+		if err != nil {
+			log.Fatalf("failed to create/open the file %v", interFile)
+		}
+		// output all related kv pairs into the corresponding nReduce'th file
+		enc := json.NewEncoder(fileHandle)
+		for _, kv := range curKva {
+			err := enc.Encode(&kv)
+		}
+		err = closeFile(fileHandle)
+		if err != nil {
+			log.Fatalf("cannot close the file '%v'", interFile)
+		}
+	}
+
+	// notify master about finish
 
 }
 
@@ -98,4 +142,49 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+// helper function for opening a file and return the content
+// If success return
+func readFileContent(fileLoc string) (content []byte) {
+	file, err := os.Open(fileLoc)
+	if err != nil {
+		log.Fatalf("cannot open %v", fileLoc)
+	}
+	content, err = ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", fileLoc)
+	}
+	file.Close()
+	return
+}
+
+// helper function that generate concatenated string as the name for intermediate result
+func getIntermediate(fileName string, mapjobID int, nth int) string {
+	result := fileName + "-" + strconv.Itoa(mapjobID) + "-" + strconv.Itoa(nth)
+	return result
+}
+
+// create a file or open an existing file with given file name
+func openOrCreate(fileLoc string) (target *os.File, err error) {
+	if fileExists(fileLoc) {
+		target, err := os.Open(fileLoc)
+	} else {
+		target, err := os.Create(fileLoc)
+	}
+	return target, err
+}
+
+// fileExists checks if a file exists and is not a directory before we
+// try using it to prevent further errors.
+func fileExists(fileLoc string) bool {
+	info, err := os.Stat(fileLoc)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func closeFile(fileHandle *File) error {
+	return os.Close(fileHandle)
 }

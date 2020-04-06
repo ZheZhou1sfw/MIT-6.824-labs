@@ -22,7 +22,7 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 	var toDeliver MrJob
 	if m.Done() {
 		// err = errors.New("done")
-		toDeliver = MrJob{"exitPlease", "", "", 0}
+		toDeliver = MrJob{"exitPlease", "", "", 0, 0}
 	} else if len(m.mapJobs)+len(m.runningMapJobs) > 0 {
 		// deliver a map job if there is any map job left
 		if len(m.mapJobs) > 0 {
@@ -105,7 +105,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// create mapjobs from input files
 	for i, file := range files {
-		m.mapJobs = append(m.mapJobs, MrJob{"map", removeDotTxt(file), file, i + 1})
+		m.mapJobs = append(m.mapJobs, MrJob{"map", removeDotTxt(file), file, i + 1, nReduce})
 	}
 
 	m.server()
@@ -114,5 +114,5 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 // Helper function to create an "hold" MrJob
 func createOnHoldJob() MrJob {
-	return MrJob{"hold", "", "", 0}
+	return MrJob{"hold", "", "", 0, 0}
 }

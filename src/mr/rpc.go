@@ -44,6 +44,7 @@ type MrJob struct {
 	fileName string
 	fileLoc  string
 	ID       int // for map, it's the mapID, for reduce, it's the nReduce'th
+	nReduce  int
 }
 
 // type MapJob struct {
