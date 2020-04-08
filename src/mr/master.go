@@ -6,15 +6,17 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sort"
 )
 
 type Master struct {
 	// Your definitions here.
-	mapJobs           []MrJob
-	reduceJobs        []MrJob
-	runningMapJobs    []MrJob
-	runningReduceJobs []MrJob
-	reduceJobID       []int
+	mapJobs              []MrJob
+	reduceJobs           []MrJob
+	runningMapJobs       []MrJob
+	runningReduceWorker  []int
+	finishedReduceWorker []int
+	nReduce              int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -22,22 +24,32 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 	var toDeliver MrJob
 	if m.Done() {
 		// err = errors.New("done")
-		toDeliver = MrJob{"exitPlease", "", "", 0, 0}
+		toDeliver = createExitJob()
 	} else if len(m.mapJobs)+len(m.runningMapJobs) > 0 {
 		// deliver a map job if there is any map job left
 		if len(m.mapJobs) > 0 {
 			toDeliver = m.mapJobs[0]
 			m.mapJobs = m.mapJobs[1:]
 			m.runningMapJobs = append(m.runningMapJobs, toDeliver)
-
-			// there are some map job processing now. Let the worker wait
 		} else {
 			toDeliver = createOnHoldJob()
 		}
 		// !!!!!!!!!!!!!!!!!! below needs to be changed to fit each workerID
 	} else {
-		toDeliver = m.reduceJobs[0]
-		m.reduceJobs = m.reduceJobs[1:]
+		nextReduceID := findNextReduceWorkerID(m)
+		// can't successfully create a reduce job
+		if nextReduceID == -1 {
+			// all jobs done
+			if len(m.runningReduceWorker) == 0 {
+				toDeliver = createExitJob()
+				// some reduce jobs are processing but no more undispatched jobs
+			} else {
+				toDeliver = createOnHoldJob()
+			}
+			// could successfully dispatch a reduce job
+		} else {
+
+		}
 	}
 	res.curJob = toDeliver
 	return // err is nil by default
@@ -88,7 +100,7 @@ func (m *Master) Done() bool {
 	ret := false
 
 	// Your code here.
-	if len(m.mapJobs)+len(m.reduceJobs)+len(m.runningMapJobs)+len(m.runningReduceJobs) == 0 {
+	if len(m.mapJobs)+len(m.reduceJobs)+len(m.runningMapJobs) == 0 && len(m.finishedReduceWorker) == m.nReduce {
 		ret = true
 	}
 	return ret
@@ -109,7 +121,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.mapJobs = make([]MrJob, 0, inLen)
 	m.runningMapJobs = make([]MrJob, 0, inLen)
 	m.reduceJobs = make([]MrJob, 0, nReduce)
-	m.runningReduceJobs = make([]MrJob, 0, nReduce)
+	m.runningReduceWorker = make([]int, 0, nReduce)
+	m.finishedReduceWorker = make([]int, 0, nReduce)
+	m.nReduce = nReduce
 
 	// create mapjobs from input files
 	for i, file := range files {
@@ -125,6 +139,10 @@ func createOnHoldJob() MrJob {
 	return MrJob{"hold", "", "", 0, 0}
 }
 
+func createExitJob() MrJob {
+	return MrJob{"exitPlease", "", "", 0, 0}
+}
+
 // find and delete an element in a slice, return the resliced result
 func deleteAndReslice(jobs []MrJob, fileName string) []MrJob {
 	j := 0
@@ -137,4 +155,18 @@ func deleteAndReslice(jobs []MrJob, fileName string) []MrJob {
 	}
 	q = q[:j]
 	return q
+}
+
+// -1 means all used
+func findNextReduceWorkerID(m *Master) int {
+	arr := make([]int, 0, m.nReduce)
+	for _, id := range append(m.finishedReduceWorker, m.runningReduceWorker...) {
+		arr = append(arr, id)
+	}
+	sort.Ints(arr)
+	lastUsedID := arr[len(arr)-1]
+	if lastUsedID >= m.nReduce {
+		return -1
+	}
+	return lastUsedID + 1
 }
