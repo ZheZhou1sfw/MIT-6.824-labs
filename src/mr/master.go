@@ -28,6 +28,7 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 		if len(m.mapJobs) > 0 {
 			toDeliver = m.mapJobs[0]
 			m.mapJobs = m.mapJobs[1:]
+			m.runningMapJobs = append(m.runningMapJobs, toDeliver)
 
 			// there are some map job processing now. Let the worker wait
 		} else {
@@ -44,7 +45,12 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 
 // notify master one a worker finished a job
 func (m *Master) notifyFinish(job MrJob, res *ExampleReply) (err error) {
-	// something
+	// map job finished
+	if job.jobType == "map" {
+		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.fileName)
+		newReduceJob := job // make a copy
+		m.reduceJobs = append(m.reduceJobs, job)
+	}
 	return
 }
 
@@ -100,8 +106,10 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// Initialize variables
 	inLen := len(files)
-	m.mapJobs = make([]MrJob, inLen)
-	m.reduceJobs = make([]MrJob, nReduce)
+	m.mapJobs = make([]MrJob, 0, inLen)
+	m.runningMapJobs = make([]MrJob, 0, inLen)
+	m.reduceJobs = make([]MrJob, 0, nReduce)
+	m.runningReduceJobs = make([]MrJob, 0, nReduce)
 
 	// create mapjobs from input files
 	for i, file := range files {
@@ -115,4 +123,18 @@ func MakeMaster(files []string, nReduce int) *Master {
 // Helper function to create an "hold" MrJob
 func createOnHoldJob() MrJob {
 	return MrJob{"hold", "", "", 0, 0}
+}
+
+// find and delete an element in a slice, return the resliced result
+func deleteAndReslice(jobs []MrJob, fileName string) []MrJob {
+	j := 0
+	q := make([]MrJob, len(jobs))
+	for _, job := range jobs {
+		if job.fileName == fileName {
+			q[j] = job
+			j++
+		}
+	}
+	q = q[:j]
+	return q
 }
