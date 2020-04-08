@@ -49,9 +49,9 @@ func Worker(mapf func(string, string) []KeyValue,
 		case "exit":
 			os.Exit(0) // exit with success
 		case "map":
-			doMap(&res.curJob, mapf)
+			doMap(res.curJob, mapf)
 		case "reduce":
-			// doReduce(&res.curJob)
+			doReduce(res.curJob, reducef)
 		}
 
 	}
@@ -86,15 +86,24 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 		// output all related kv pairs into the corresponding nReduce'th file
 		enc := json.NewEncoder(fileHandle)
 		for _, kv := range curKva {
-			err := enc.Encode(&kv)
+			err = enc.Encode(&kv)
 		}
-		err = closeFile(fileHandle)
+		err = fileHandle.Close()
 		if err != nil {
 			log.Fatalf("cannot close the file '%v'", interFile)
 		}
 	}
 
 	// notify master about finish
+	dummyRes := RPCresponse{}
+	call("Master.notifyFinish", mapJob, &dummyRes)
+
+	return
+}
+
+// doMap takes in an MrJob, output nReduce intermediate files for later use in reduce phase
+// Return type: Error. Nil means success
+func doReduce(mapJob *MrJob, reducef func(string, []string) []KeyValue) (err error) {
 
 }
 
@@ -161,18 +170,19 @@ func readFileContent(fileLoc string) (content []byte) {
 
 // helper function that generate concatenated string as the name for intermediate result
 func getIntermediate(fileName string, mapjobID int, nth int) string {
-	result := fileName + "-" + strconv.Itoa(mapjobID) + "-" + strconv.Itoa(nth)
+	// result := fileName + "-" + strconv.Itoa(mapjobID) + "-" + strconv.Itoa(nth)
+	result := "inter" + "-" + fileName + "-" + strconv.Itoa(nth)
 	return result
 }
 
 // create a file or open an existing file with given file name
 func openOrCreate(fileLoc string) (target *os.File, err error) {
 	if fileExists(fileLoc) {
-		target, err := os.Open(fileLoc)
+		target, err = os.Open(fileLoc)
 	} else {
-		target, err := os.Create(fileLoc)
+		target, err = os.Create(fileLoc)
 	}
-	return target, err
+	return
 }
 
 // fileExists checks if a file exists and is not a directory before we
@@ -183,8 +193,4 @@ func fileExists(fileLoc string) bool {
 		return false
 	}
 	return !info.IsDir()
-}
-
-func closeFile(fileHandle *File) error {
-	return os.Close(fileHandle)
 }

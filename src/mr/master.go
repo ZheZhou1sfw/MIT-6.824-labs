@@ -7,6 +7,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"strconv"
 )
 
 type Master struct {
@@ -28,9 +29,8 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 	} else if len(m.mapJobs)+len(m.runningMapJobs) > 0 {
 		// deliver a map job if there is any map job left
 		if len(m.mapJobs) > 0 {
-			toDeliver = m.mapJobs[0]
-			m.mapJobs = m.mapJobs[1:]
-			m.runningMapJobs = append(m.runningMapJobs, toDeliver)
+			toDeliver = createMapJob(m)
+
 		} else {
 			toDeliver = createOnHoldJob()
 		}
@@ -48,20 +48,21 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 			}
 			// could successfully dispatch a reduce job
 		} else {
-
+			// The reduce job should base on all map job, but is for one specific reduceID (nReduceIDs in total)
+			toDeliver = createReduceJob(m, nextReduceID)
 		}
 	}
-	res.curJob = toDeliver
+	res.curJob = &toDeliver
 	return // err is nil by default
 }
 
 // notify master one a worker finished a job
-func (m *Master) notifyFinish(job MrJob, res *ExampleReply) (err error) {
+func (m *Master) notifyFinish(job *MrJob, res *ExampleReply) (err error) {
 	// map job finished
 	if job.jobType == "map" {
 		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.fileName)
-		newReduceJob := job // make a copy
-		m.reduceJobs = append(m.reduceJobs, job)
+		newReduceJob := *job // make a copy
+		m.reduceJobs = append(m.reduceJobs, newReduceJob)
 	}
 	return
 }
@@ -139,8 +140,33 @@ func createOnHoldJob() MrJob {
 	return MrJob{"hold", "", "", 0, 0}
 }
 
+// Helper function to create an "exit" MrJob
 func createExitJob() MrJob {
 	return MrJob{"exitPlease", "", "", 0, 0}
+}
+
+// Helper for create map job
+func createMapJob(m *Master) MrJob {
+	newMapJob := m.mapJobs[0]
+	m.mapJobs = m.mapJobs[1:]
+	m.runningMapJobs = append(m.runningMapJobs, newMapJob)
+	return newMapJob
+}
+
+// Helper function to create an ReduceJob based on reduce ID
+// "Generate all file names with all jobs and that reduceID"
+func createReduceJob(m *Master, nextReduceID int) MrJob {
+	fileNameBatch, fileLocBatch := "", ""
+	for _, reduceJob := range m.reduceJobs {
+		fileNameBatch = fileNameBatch + "inter" + "-" + reduceJob.fileName + "-" + strconv.Itoa(nextReduceID) + "|"
+		fileLocBatch = fileNameBatch + "inter" + "-" + reduceJob.fileName + ".txt" + "-" + strconv.Itoa(nextReduceID) + "|"
+	}
+	newReduceJob := MrJob{"reduce", fileNameBatch, fileLocBatch, nextReduceID, m.nReduce}
+
+	// update Master's reduce tables
+	m.runningReduceWorker = append(m.runningReduceWorker, nextReduceID)
+
+	return newReduceJob
 }
 
 // find and delete an element in a slice, return the resliced result
@@ -157,6 +183,7 @@ func deleteAndReslice(jobs []MrJob, fileName string) []MrJob {
 	return q
 }
 
+// Helper function that returns the next unassigned reduceWorkerID (nReduce in total)
 // -1 means all used
 func findNextReduceWorkerID(m *Master) int {
 	arr := make([]int, 0, m.nReduce)

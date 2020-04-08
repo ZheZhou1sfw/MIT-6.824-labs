@@ -31,7 +31,7 @@ type RPCrequest struct {
 }
 
 type RPCresponse struct {
-	curJob MrJob
+	curJob *MrJob
 }
 
 /*
