@@ -8,7 +8,9 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 //
@@ -18,6 +20,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -103,8 +113,69 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 
 // doMap takes in an MrJob, output nReduce intermediate files for later use in reduce phase
 // Return type: Error. Nil means success
-func doReduce(mapJob *MrJob, reducef func(string, []string) []KeyValue) (err error) {
+func doReduce(reduceJob *MrJob, reducef func(string, []string) []KeyValue) (err error) {
+	// the kva  array that stores all kva  key-values pairs
+	kva := []KeyValue{}
 
+	// read in all files and append kva to []kva
+	files := strings.Split(reduceJob.fileLoc, "|")
+	for _, fileLocString := range files {
+
+		fileHandle, err := openOrCreate(fileLocString)
+		if err != nil {
+			log.Fatalf("failed to create/open the file %v", fileLocString)
+		}
+		// read in using decoder
+		dec := json.NewDecoder(fileHandle)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+	}
+
+	// sort by key
+	sort.Sort(ByKey(kva))
+
+	// create the file to write the output to
+	oname := getFinalFileName(reduceJob.ID)
+	ofile, err := os.Create(oname)
+
+	if err != nil {
+		log.Fatalf("failed to create the file %v", oname)
+	}
+
+	//
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to mr-out-0.
+	//
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+
+	// notify master about finishing reduce
+	dummyRes := RPCresponse{}
+	call("Master.notifyFinish", reduceJob, &dummyRes)
+
+	return
 }
 
 //
@@ -172,6 +243,12 @@ func readFileContent(fileLoc string) (content []byte) {
 func getIntermediate(fileName string, mapjobID int, nth int) string {
 	// result := fileName + "-" + strconv.Itoa(mapjobID) + "-" + strconv.Itoa(nth)
 	result := "inter" + "-" + fileName + "-" + strconv.Itoa(nth)
+	return result
+}
+
+// helper function that generate the final output name
+func getFinalFileName(nth int) string {
+	result := "mr-out-" + strconv.Itoa(nth)
 	return result
 }
 

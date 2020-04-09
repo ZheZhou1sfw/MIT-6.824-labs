@@ -63,6 +63,10 @@ func (m *Master) notifyFinish(job *MrJob, res *ExampleReply) (err error) {
 		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.fileName)
 		newReduceJob := *job // make a copy
 		m.reduceJobs = append(m.reduceJobs, newReduceJob)
+	} else if job.jobType == "reduce" {
+		// ------ My code here ------ //
+	} else {
+		log.Fatal("Cannot notifyFinish this job type" + job.jobType)
 	}
 	return
 }
@@ -159,7 +163,7 @@ func createReduceJob(m *Master, nextReduceID int) MrJob {
 	fileNameBatch, fileLocBatch := "", ""
 	for _, reduceJob := range m.reduceJobs {
 		fileNameBatch = fileNameBatch + "inter" + "-" + reduceJob.fileName + "-" + strconv.Itoa(nextReduceID) + "|"
-		fileLocBatch = fileNameBatch + "inter" + "-" + reduceJob.fileName + ".txt" + "-" + strconv.Itoa(nextReduceID) + "|"
+		fileLocBatch := fileNameBatch
 	}
 	newReduceJob := MrJob{"reduce", fileNameBatch, fileLocBatch, nextReduceID, m.nReduce}
 
