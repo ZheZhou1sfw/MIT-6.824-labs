@@ -53,7 +53,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		call("Master.getAJob", &req, &res)
 		// depend on the job type (4 types), do different things
 
-		switch jobType := res.curJob.jobType; jobType {
+		jobType := res.curJob.jobType
+		switch jobType {
 		case "hold":
 			continue
 		case "exit":
@@ -87,7 +88,7 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 
 	// output these intermediate files
 	for i := 0; i < mapJob.nReduce; i++ {
-		interFile := getIntermediate(mapJob.fileName, mapJob.ID, i)
+		interFile := getIntermediate(mapJob.fileName, mapJob.ID, i+1)
 		curKva := kvaArray[i]
 		fileHandle, err := openOrCreate(interFile)
 		if err != nil {
@@ -113,7 +114,7 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 
 // doMap takes in an MrJob, output nReduce intermediate files for later use in reduce phase
 // Return type: Error. Nil means success
-func doReduce(reduceJob *MrJob, reducef func(string, []string) []KeyValue) (err error) {
+func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err error) {
 	// the kva  array that stores all kva  key-values pairs
 	kva := []KeyValue{}
 
