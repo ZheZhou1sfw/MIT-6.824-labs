@@ -22,8 +22,10 @@ type Master struct {
 }
 
 // Your code here -- RPC handlers for the worker to call.
-func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
+func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 	fmt.Println("want a job")
+	fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
+	fmt.Println("-----------")
 	var toDeliver *MrJob
 	if m.Done() {
 		// err = errors.New("done")
@@ -36,6 +38,7 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 			toDeliver = createOnHoldJob()
 		}
 	} else {
+		// fmt.Println(m.reduceJobs)
 		nextReduceID := findNextReduceWorkerID(m)
 		// can't successfully create a reduce job
 		if nextReduceID == -1 {
@@ -52,18 +55,22 @@ func (m *Master) getAJob(req RPCrequest, res *RPCresponse) (err error) {
 			toDeliver = createReduceJob(m, nextReduceID)
 		}
 	}
-	res.curJob = toDeliver
+	res.CurJob = toDeliver
 	return // err is nil by default
 }
 
 // notify master one a worker finished a job
-func (m *Master) notifyFinish(job *MrJob, res *ExampleReply) (err error) {
+func (m *Master) NotifyFinish(job *MrJob, res *ExampleReply) (err error) {
 	// map job finished
-	if job.jobType == "map" {
-		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.fileName)
+	// fmt.Printf("Notified with job type '%v'", job.JobType)
+	// fmt.Println("")
+	if job.JobType == "map" {
+		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.FileName)
 		newReduceJob := *job // make a copy
+		newReduceJob.JobType = "reduce"
 		m.reduceJobs = append(m.reduceJobs, newReduceJob)
-	} else if job.jobType == "reduce" {
+		// fmt.Println("map job yes")
+	} else if job.JobType == "reduce" {
 		// find and remove runningReduceJobID
 		reduceID := job.ID
 		for i, rid := range m.runningReduceWorker {
@@ -74,7 +81,7 @@ func (m *Master) notifyFinish(job *MrJob, res *ExampleReply) (err error) {
 			}
 		}
 	} else {
-		log.Fatal("Cannot notifyFinish this job type" + job.jobType)
+		log.Fatal("Cannot notifyFinish this job type" + job.JobType)
 	}
 	return
 }
@@ -113,7 +120,8 @@ func (m *Master) Done() bool {
 	ret := false
 
 	// Your code here.
-	if len(m.mapJobs)+len(m.reduceJobs)+len(m.runningMapJobs) == 0 && len(m.finishedReduceWorker) == m.nReduce {
+	// fmt.Println(len(m.mapJobs), len(m.reduceJobs), len(m.runningMapJobs))
+	if len(m.mapJobs)+len(m.runningMapJobs)+len(m.runningReduceWorker) == 0 && len(m.finishedReduceWorker) == m.nReduce {
 		ret = true
 	}
 	return ret
@@ -140,8 +148,10 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// create mapjobs from input files
 	for i, file := range files {
-		m.mapJobs = append(m.mapJobs, MrJob{"map", removeDotTxt(file), file, i + 1, nReduce})
+		m.mapJobs = append(m.mapJobs, MrJob{"map", RemoveDotTxt(file), file, i + 1, nReduce})
 	}
+
+	// fmt.Println(m.mapJobs)
 
 	m.server()
 	return &m
@@ -171,7 +181,7 @@ func createReduceJob(m *Master, nextReduceID int) *MrJob {
 	fileNameBatch := ""
 	// fileNameBatch, fileLocBatch := "", ""
 	for _, reduceJob := range m.reduceJobs {
-		fileNameBatch = fileNameBatch + "inter" + "-" + reduceJob.fileName + "-" + strconv.Itoa(nextReduceID) + "|"
+		fileNameBatch = fileNameBatch + "inter" + "-" + reduceJob.FileName + "-" + strconv.Itoa(nextReduceID) + "|"
 		// fileLocBatch := fileNameBatch
 	}
 	newReduceJob := MrJob{"reduce", fileNameBatch, fileNameBatch, nextReduceID, m.nReduce}
@@ -187,7 +197,7 @@ func deleteAndReslice(jobs []*MrJob, fileName string) []*MrJob {
 	j := 0
 	q := make([]*MrJob, len(jobs))
 	for _, job := range jobs {
-		if job.fileName != fileName {
+		if job.FileName != fileName {
 			q[j] = job
 			j++
 		}

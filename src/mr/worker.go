@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 //
@@ -50,19 +51,20 @@ func Worker(mapf func(string, string) []KeyValue,
 		// try get a job from master
 		req := RPCrequest{""}
 		res := RPCresponse{}
-		call("Master.getAJob", &req, &res)
+		call("Master.GetAJob", &req, &res)
 		// depend on the job type (4 types), do different things
 
-		jobType := res.curJob.jobType
+		jobType := res.CurJob.JobType
 		switch jobType {
 		case "hold":
-			continue
+			// wait for a while before request master again
+			time.Sleep(200 * time.Millisecond)
 		case "exit":
 			os.Exit(0) // exit with success
 		case "map":
-			doMap(res.curJob, mapf)
+			doMap(res.CurJob, mapf)
 		case "reduce":
-			doReduce(res.curJob, reducef)
+			doReduce(res.CurJob, reducef)
 		}
 
 	}
@@ -73,26 +75,28 @@ func Worker(mapf func(string, string) []KeyValue,
 // Return type: Error. Nil means success
 func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 	// open the file and get all kv in kva
-	content := readFileContent(mapJob.fileLoc)
-	kva := mapf(mapJob.fileLoc, string(content))
+	content := readFileContent(mapJob.FileLoc)
+	kva := mapf(mapJob.FileLoc, string(content))
 
 	// assign kv according to ihash % nReduce to different intermediate files
-	kvaArray := make([][]KeyValue, mapJob.nReduce)
+	kvaArray := make([][]KeyValue, mapJob.NReduce)
 	for _, kv := range kva {
-		targetIdx := ihash(kv.Key) % mapJob.nReduce
+		targetIdx := ihash(kv.Key) % mapJob.NReduce
 		if kvaArray[targetIdx] == nil {
-			kvaArray[targetIdx] = make([]KeyValue, len(kva))
+			// kvaArray[targetIdx] = make([]KeyValue, len(kva))
+			kvaArray[targetIdx] = []KeyValue{}
 		}
 		kvaArray[targetIdx] = append(kvaArray[targetIdx], kv)
 	}
 
 	// output these intermediate files
-	for i := 0; i < mapJob.nReduce; i++ {
-		interFile := getIntermediate(mapJob.fileName, mapJob.ID, i+1)
+	for i := 0; i < mapJob.NReduce; i++ {
+		interFile := getIntermediate(mapJob.FileName, mapJob.ID, i+1)
+
 		curKva := kvaArray[i]
 		fileHandle, err := openOrCreate(interFile)
 		if err != nil {
-			log.Fatalf("failed to create/open the file %v", interFile)
+			log.Fatalf("failed to create/open the file in map phase: %v", interFile)
 		}
 		// output all related kv pairs into the corresponding nReduce'th file
 		enc := json.NewEncoder(fileHandle)
@@ -107,7 +111,7 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 
 	// notify master about finish
 	dummyRes := RPCresponse{}
-	call("Master.notifyFinish", mapJob, &dummyRes)
+	call("Master.NotifyFinish", mapJob, &dummyRes)
 
 	return
 }
@@ -115,16 +119,18 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 // doMap takes in an MrJob, output nReduce intermediate files for later use in reduce phase
 // Return type: Error. Nil means success
 func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err error) {
+	// fmt.Println(*reduceJob)
 	// the kva  array that stores all kva  key-values pairs
 	kva := []KeyValue{}
 
 	// read in all files and append kva to []kva
-	files := strings.Split(reduceJob.fileLoc, "|")
-	for _, fileLocString := range files {
-
+	files := strings.Split(reduceJob.FileLoc, "|")
+	for _, fileLocByte := range files {
+		fileLocString := string(fileLocByte)
+		// fmt.Println(fileLocString)
 		fileHandle, err := openOrCreate(fileLocString)
 		if err != nil {
-			log.Fatalf("failed to create/open the file %v", fileLocString)
+			// log.Fatalf("failed to create/open the file in reduce phase: %v", fileLocString)
 		}
 		// read in using decoder
 		dec := json.NewDecoder(fileHandle)
@@ -174,7 +180,7 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 
 	// notify master about finishing reduce
 	dummyRes := RPCresponse{}
-	call("Master.notifyFinish", reduceJob, &dummyRes)
+	call("Master.NotifyFinish", reduceJob, &dummyRes)
 
 	return
 }
@@ -256,6 +262,8 @@ func getFinalFileName(nth int) string {
 // create a file or open an existing file with given file name
 func openOrCreate(fileLoc string) (target *os.File, err error) {
 	if fileExists(fileLoc) {
+		// fmt.Printf("file exist: %v", fileLoc)
+		// fmt.Println("")
 		target, err = os.Open(fileLoc)
 	} else {
 		target, err = os.Create(fileLoc)
