@@ -105,29 +105,45 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 		kvaArray[targetIdx] = append(kvaArray[targetIdx], kv)
 	}
 
+	// create a tempFile(*os.File) -> realFileName(string) map that needs to be renamed if notify Succeeds
+	tempFileMap := make(map[*os.File]string)
+
 	// output these intermediate files
 	for i := 0; i < mapJob.NReduce; i++ {
-		interFile := getIntermediate(mapJob.FileName, mapJob.ID, i+1)
+		interFileName := getIntermediate(mapJob.FileName, mapJob.ID, i+1)
 
 		curKva := kvaArray[i]
-		fileHandle, err := openOrCreate(interFile)
+		//fileHandle, err := openOrCreate(interFileName)
+		tempFileHandle, err := ioutil.TempFile("", interFileName)
 		if err != nil {
-			log.Fatalf("failed to create/open the file in map phase: %v", interFile)
+			log.Fatalf("failed to create tempFile in map phase: %v", interFileName)
 		}
+		tempFileMap[tempFileHandle] = interFileName
+
 		// output all related kv pairs into the corresponding nReduce'th file
-		enc := json.NewEncoder(fileHandle)
+		enc := json.NewEncoder(tempFileHandle)
 		for _, kv := range curKva {
 			err = enc.Encode(&kv)
 		}
-		err = fileHandle.Close()
+		err = tempFileHandle.Close()
 		if err != nil {
-			log.Fatalf("cannot close the file '%v'", interFile)
+			log.Fatalf("cannot close the file in map phase '%v'", interFileName)
 		}
 	}
 
 	// notify master about finish
 	notifyRes := NotifyResponse{}
 	call("Master.NotifyFinish", mapJob, &notifyRes)
+
+	// if acknowledged, rename the tempFile
+	if notifyRes.Ack {
+		for tempFileHandle, realFileName := range tempFileMap {
+			err = os.Rename(tempFileHandle.Name(), realFileName)
+			if err != nil {
+				log.Fatalf("cannot rename tempfile %v to real fileName '%v'", tempFileHandle.Name(), realFileName)
+			}
+		}
+	}
 
 	return
 }
@@ -164,7 +180,12 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 
 	// create the file to write the output to
 	oname := getFinalFileName(reduceJob.ID)
-	ofile, err := os.Create(oname)
+	tempFileHandle, err := ioutil.TempFile("", oname)
+	if err != nil {
+		log.Fatalf("failed to create tempFile in reduce phase: %v", oname)
+	}
+
+	//ofile, err := os.Create(oname)
 
 	if err != nil {
 		log.Fatalf("failed to create the file %v", oname)
@@ -187,16 +208,27 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 		output := reducef(kva[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+		fmt.Fprintf(tempFileHandle, "%v %v\n", kva[i].Key, output)
 
 		i = j
 	}
 
-	ofile.Close()
+	err = tempFileHandle.Close()
+	if err != nil {
+		log.Fatalf("cannot close the file in reduce phase '%v'", oname)
+	}
 
 	// notify master about finishing reduce
 	notifyRes := NotifyResponse{}
 	call("Master.NotifyFinish", reduceJob, &notifyRes)
+
+	// if acknowledged, rename the tempFile
+	if notifyRes.Ack {
+		err = os.Rename(tempFileHandle.Name(), oname)
+		if err != nil {
+			log.Fatalf("cannot rename tempfile %v to real fileName '%v'", tempFileHandle.Name(), oname)
+		}
+	}
 
 	return
 }

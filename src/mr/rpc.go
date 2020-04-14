@@ -36,7 +36,7 @@ type RPCresponse struct {
 
 // RPC structures used for RPC in "NotifyFinish"
 type NotifyResponse struct {
-	ack bool
+	Ack bool
 }
 
 /*

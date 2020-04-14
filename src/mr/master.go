@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -25,9 +26,9 @@ type Master struct {
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
-	// fmt.Println("want a job")
-	// fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
-	// fmt.Println("-----------")
+	fmt.Println("want a job")
+	fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
+	fmt.Println("-----------")
 
 	// check if any pending job is over due
 	m.checkPendingJobs()
@@ -66,7 +67,7 @@ func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 }
 
 // notify master one a worker finished a job
-func (m *Master) NotifyFinish(job *MrJob, res *ExampleReply) (err error) {
+func (m *Master) NotifyFinish(job *MrJob, res *NotifyResponse) (err error) {
 	// map job finished
 	// fmt.Printf("Notified with job type '%v'", job.JobType)
 	// fmt.Println("")
@@ -90,6 +91,9 @@ func (m *Master) NotifyFinish(job *MrJob, res *ExampleReply) (err error) {
 	} else {
 		log.Fatal("Cannot notifyFinish this job type" + job.JobType)
 	}
+
+	res.Ack = true
+
 	return
 }
 
