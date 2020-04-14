@@ -34,6 +34,11 @@ type RPCresponse struct {
 	CurJob *MrJob
 }
 
+// RPC structures used for RPC in "NotifyFinish"
+type NotifyResponse struct {
+	ack bool
+}
+
 /*
 The mapJob used for Map phase
 jobType: 1: "map", 2: "reduce", 3: "pleaseExit", 4: "hold"

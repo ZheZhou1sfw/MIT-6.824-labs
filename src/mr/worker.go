@@ -46,12 +46,28 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	timeoutSeconds := 10 * time.Second
+
 	// infinite loop here
 	for {
 		// try get a job from master
 		req := RPCrequest{""}
 		res := RPCresponse{}
-		call("Master.GetAJob", &req, &res)
+
+		// also check time out
+		c := make(chan error, 1)
+		go func() { c <- call("Master.GetAJob", &req, &res) }()
+		select {
+		case err := <-c:
+			if err != nil {
+				log.Fatal("dialing in channel:", err)
+			}
+		case <-time.After(timeoutSeconds):
+			// call timed out
+			os.Exit(0) // exit with success
+		}
+
+		// call("Master.GetAJob", &req, &res)
 		// depend on the job type (4 types), do different things
 
 		jobType := res.CurJob.JobType
@@ -110,8 +126,8 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 	}
 
 	// notify master about finish
-	dummyRes := RPCresponse{}
-	call("Master.NotifyFinish", mapJob, &dummyRes)
+	notifyRes := NotifyResponse{}
+	call("Master.NotifyFinish", mapJob, &notifyRes)
 
 	return
 }
@@ -179,8 +195,8 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 	ofile.Close()
 
 	// notify master about finishing reduce
-	dummyRes := RPCresponse{}
-	call("Master.NotifyFinish", reduceJob, &dummyRes)
+	notifyRes := NotifyResponse{}
+	call("Master.NotifyFinish", reduceJob, &notifyRes)
 
 	return
 }
@@ -213,7 +229,7 @@ func CallExample() {
 // usually returns true.
 // returns false if something goes wrong.
 //
-func call(rpcname string, args interface{}, reply interface{}) bool {
+func call(rpcname string, args interface{}, reply interface{}) error {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := masterSock()
 	c, err := rpc.DialHTTP("unix", sockname)
@@ -223,12 +239,13 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
+	// if err == nil {
+	// 	return true
+	// }
 
-	fmt.Println(err)
-	return false
+	//fmt.Println(err)
+	// return false
+	return err
 }
 
 // helper function for opening a file and return the content

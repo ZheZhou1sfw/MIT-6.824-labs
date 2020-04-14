@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -9,23 +8,30 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 )
 
 type Master struct {
 	// Your definitions here.
-	mapJobs              []MrJob
-	reduceJobs           []MrJob
-	runningMapJobs       []*MrJob
-	runningReduceWorker  []int
-	finishedReduceWorker []int
-	nReduce              int
+	mapJobs                    []MrJob
+	reduceJobs                 []MrJob
+	runningMapJobs             []*MrJob
+	runningMapJobsTimeMap      map[*MrJob]time.Time
+	runningReduceWorker        []int
+	runningReduceWorkerTimeMap map[int]time.Time
+	finishedReduceWorker       []int
+	nReduce                    int
 }
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
-	fmt.Println("want a job")
-	fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
-	fmt.Println("-----------")
+	// fmt.Println("want a job")
+	// fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
+	// fmt.Println("-----------")
+
+	// check if any pending job is over due
+	m.checkPendingJobs()
+
 	var toDeliver *MrJob
 	if m.Done() {
 		// err = errors.New("done")
@@ -77,6 +83,7 @@ func (m *Master) NotifyFinish(job *MrJob, res *ExampleReply) (err error) {
 			if rid == reduceID {
 				m.runningReduceWorker = append(m.runningReduceWorker[:i], m.runningReduceWorker[i+1:]...)
 				m.finishedReduceWorker = append(m.finishedReduceWorker, reduceID)
+				delete(m.runningReduceWorkerTimeMap, rid)
 				break
 			}
 		}
@@ -143,7 +150,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.runningMapJobs = make([]*MrJob, 0, inLen)
 	m.reduceJobs = make([]MrJob, 0, nReduce)
 	m.runningReduceWorker = make([]int, 0, nReduce)
+	m.runningMapJobsTimeMap = make(map[*MrJob]time.Time)
 	m.finishedReduceWorker = make([]int, 0, nReduce)
+	m.runningReduceWorkerTimeMap = make(map[int]time.Time)
 	m.nReduce = nReduce
 
 	// create mapjobs from input files
@@ -172,6 +181,9 @@ func createMapJob(m *Master) *MrJob {
 	newMapJob := &m.mapJobs[0]
 	m.mapJobs = m.mapJobs[1:]
 	m.runningMapJobs = append(m.runningMapJobs, newMapJob)
+
+	m.runningMapJobsTimeMap[newMapJob] = time.Now()
+
 	return newMapJob
 }
 
@@ -188,6 +200,8 @@ func createReduceJob(m *Master, nextReduceID int) *MrJob {
 
 	// update Master's reduce tables
 	m.runningReduceWorker = append(m.runningReduceWorker, nextReduceID)
+
+	m.runningReduceWorkerTimeMap[nextReduceID] = time.Now()
 
 	return &newReduceJob
 }
@@ -224,4 +238,29 @@ func findNextReduceWorkerID(m *Master) int {
 		return -1
 	}
 	return lastUsedID + 1
+}
+
+func (m *Master) checkPendingJobs() {
+	// milliseconds
+	timeout := int64(10000)
+
+	// check running map jobs
+	for i, mapJob := range m.runningMapJobs {
+		curTime := time.Now()
+		// if greater than certain period, we assume the worker is dead. Reassign the job.
+		if curTime.Sub(m.runningMapJobsTimeMap[mapJob]).Nanoseconds()/1e6 > timeout {
+			m.runningMapJobs = append(m.runningMapJobs[:i], m.runningMapJobs[i+1:]...)
+			delete(m.runningMapJobsTimeMap, mapJob)
+		}
+	}
+
+	// check running reduce jobs
+	for i, reduceWorkerID := range m.runningReduceWorker {
+		curTime := time.Now()
+		// if greater than certain period, we assume the worker is dead. Reassign the job.
+		if curTime.Sub(m.runningReduceWorkerTimeMap[reduceWorkerID]).Nanoseconds()/1e6 > timeout {
+			m.runningReduceWorker = append(m.runningReduceWorker[i:], m.runningReduceWorker[i+1:]...)
+			delete(m.runningReduceWorkerTimeMap, reduceWorkerID)
+		}
+	}
 }
