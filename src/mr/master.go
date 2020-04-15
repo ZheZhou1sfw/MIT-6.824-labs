@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,8 @@ type Master struct {
 
 	nReduce    int
 	hashKeyMap map[string]bool
+
+	mux sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -49,20 +52,26 @@ func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 	} else if len(m.mapJobs)+len(m.runningMapJobs) > 0 {
 		// deliver a map job if there is any map job left
 		if len(m.mapJobs) > 0 {
+			m.mux.Lock()
 			toDeliver = createMapJob(m)
+			m.mux.Unlock()
 		} else {
 			toDeliver = createOnHoldJob()
 		}
 	} else {
 		// if it's the first time map finishes, we need to generate all reduce jobs
 		if !m.reduceGenerated {
+			m.mux.Lock()
 			generateReduceJobs(m)
+			m.mux.Unlock()
 			m.reduceGenerated = true
 		}
 
 		// deliver a reduce job if there is any reduce job left
 		if len(m.reduceJobs) > 0 {
+			m.mux.Lock()
 			toDeliver = createReduceJob(m)
+			m.mux.Unlock()
 		} else {
 			toDeliver = createOnHoldJob()
 		}
@@ -81,6 +90,7 @@ func (m *Master) NotifyFinish(job *MrJob, res *NotifyResponse) (err error) {
 		return
 	}
 
+	m.mux.Lock()
 	if job.JobType == "map" {
 		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.FileName)
 		newReduceJob := *job // make a copy
@@ -93,6 +103,8 @@ func (m *Master) NotifyFinish(job *MrJob, res *NotifyResponse) (err error) {
 	}
 
 	delete(m.hashKeyMap, job.Hashkey)
+	m.mux.Unlock()
+
 	res.Ack = true
 
 	return
