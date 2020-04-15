@@ -42,7 +42,6 @@ type NotifyResponse struct {
 /*
 The mapJob used for Map phase
 jobType: 1: "map", 2: "reduce", 3: "pleaseExit", 4: "hold"
-file
 */
 type MrJob struct {
 	JobType  string
@@ -79,7 +78,5 @@ func RemoveDotTxt(file string) string {
 	splits := strings.Split(file, ".")
 	targetByte := splits[len(splits)-2]
 	str := (string(targetByte))[1:]
-	// fmt.Println("!!!!!!!!!!!!!!!!!!!!!!!!1")
-	// fmt.Println(str)
 	return str
 }

@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -26,9 +25,14 @@ type Master struct {
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
-	fmt.Println("want a job")
-	fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
-	fmt.Println("-----------")
+	// -------Debug Info -------- //
+	// fmt.Println("want a job")
+	// fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
+	// fmt.Println("")
+	// fmt.Println(m.runningReduceWorker)
+	// fmt.Println(m.runningReduceWorkerTimeMap)
+	// fmt.Println(m.finishedReduceWorker)
+	// fmt.Println("-----------")
 
 	// check if any pending job is over due
 	m.checkPendingJobs()
@@ -45,7 +49,6 @@ func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 			toDeliver = createOnHoldJob()
 		}
 	} else {
-		// fmt.Println(m.reduceJobs)
 		nextReduceID := findNextReduceWorkerID(m)
 		// can't successfully create a reduce job
 		if nextReduceID == -1 {
@@ -68,15 +71,11 @@ func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 
 // notify master one a worker finished a job
 func (m *Master) NotifyFinish(job *MrJob, res *NotifyResponse) (err error) {
-	// map job finished
-	// fmt.Printf("Notified with job type '%v'", job.JobType)
-	// fmt.Println("")
 	if job.JobType == "map" {
 		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.FileName)
 		newReduceJob := *job // make a copy
 		newReduceJob.JobType = "reduce"
 		m.reduceJobs = append(m.reduceJobs, newReduceJob)
-		// fmt.Println("map job yes")
 	} else if job.JobType == "reduce" {
 		// find and remove runningReduceJobID
 		reduceID := job.ID
@@ -93,7 +92,6 @@ func (m *Master) NotifyFinish(job *MrJob, res *NotifyResponse) (err error) {
 	}
 
 	res.Ack = true
-
 	return
 }
 
@@ -131,7 +129,6 @@ func (m *Master) Done() bool {
 	ret := false
 
 	// Your code here.
-	// fmt.Println(len(m.mapJobs), len(m.reduceJobs), len(m.runningMapJobs))
 	if len(m.mapJobs)+len(m.runningMapJobs)+len(m.runningReduceWorker) == 0 && len(m.finishedReduceWorker) == m.nReduce {
 		ret = true
 	}
@@ -163,8 +160,6 @@ func MakeMaster(files []string, nReduce int) *Master {
 	for i, file := range files {
 		m.mapJobs = append(m.mapJobs, MrJob{"map", RemoveDotTxt(file), file, i + 1, nReduce})
 	}
-
-	// fmt.Println(m.mapJobs)
 
 	m.server()
 	return &m
@@ -237,34 +232,48 @@ func findNextReduceWorkerID(m *Master) int {
 	}
 
 	sort.Ints(arr)
-	lastUsedID := arr[len(arr)-1]
-	if lastUsedID >= m.nReduce {
-		return -1
+
+	id := 1
+	for idx := 0; idx < len(arr); idx, id = idx+1, id+1 {
+		// missing id here
+		if arr[idx] != id {
+			return id
+		}
 	}
-	return lastUsedID + 1
+	if id <= m.nReduce {
+		return id
+	}
+	return -1
 }
 
 func (m *Master) checkPendingJobs() {
 	// milliseconds
 	timeout := int64(10000)
 
+	newRunningMapJobs := []*MrJob{}
 	// check running map jobs
-	for i, mapJob := range m.runningMapJobs {
+	for _, mapJob := range m.runningMapJobs {
 		curTime := time.Now()
 		// if greater than certain period, we assume the worker is dead. Reassign the job.
 		if curTime.Sub(m.runningMapJobsTimeMap[mapJob]).Nanoseconds()/1e6 > timeout {
-			m.runningMapJobs = append(m.runningMapJobs[:i], m.runningMapJobs[i+1:]...)
 			delete(m.runningMapJobsTimeMap, mapJob)
+			m.mapJobs = append(m.mapJobs, *mapJob)
+		} else {
+			newRunningMapJobs = append(newRunningMapJobs, mapJob)
 		}
 	}
+	m.runningMapJobs = newRunningMapJobs
 
+	newRunningReduceWorker := []int{}
 	// check running reduce jobs
-	for i, reduceWorkerID := range m.runningReduceWorker {
+	for _, reduceWorkerID := range m.runningReduceWorker {
 		curTime := time.Now()
 		// if greater than certain period, we assume the worker is dead. Reassign the job.
 		if curTime.Sub(m.runningReduceWorkerTimeMap[reduceWorkerID]).Nanoseconds()/1e6 > timeout {
-			m.runningReduceWorker = append(m.runningReduceWorker[i:], m.runningReduceWorker[i+1:]...)
 			delete(m.runningReduceWorkerTimeMap, reduceWorkerID)
+		} else {
+			newRunningReduceWorker = append(newRunningReduceWorker, reduceWorkerID)
 		}
 	}
+	m.runningReduceWorker = newRunningReduceWorker
 }

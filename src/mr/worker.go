@@ -114,7 +114,7 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 
 		curKva := kvaArray[i]
 		//fileHandle, err := openOrCreate(interFileName)
-		tempFileHandle, err := ioutil.TempFile("", interFileName)
+		tempFileHandle, err := ioutil.TempFile("", "*|"+interFileName)
 		if err != nil {
 			log.Fatalf("failed to create tempFile in map phase: %v", interFileName)
 		}
@@ -151,7 +151,6 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 // doMap takes in an MrJob, output nReduce intermediate files for later use in reduce phase
 // Return type: Error. Nil means success
 func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err error) {
-	// fmt.Println(*reduceJob)
 	// the kva  array that stores all kva  key-values pairs
 	kva := []KeyValue{}
 
@@ -159,11 +158,10 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 	files := strings.Split(reduceJob.FileLoc, "|")
 	for _, fileLocByte := range files {
 		fileLocString := string(fileLocByte)
-		// fmt.Println(fileLocString)
-		fileHandle, err := openOrCreate(fileLocString)
-		if err != nil {
-			// log.Fatalf("failed to create/open the file in reduce phase: %v", fileLocString)
-		}
+		fileHandle, _ := openOrCreate(fileLocString)
+		// if err != nil {
+		// 	log.Fatalf("failed to create/open the file in reduce phase: %v", fileLocString)
+		// }
 		// read in using decoder
 		dec := json.NewDecoder(fileHandle)
 		for {
@@ -180,15 +178,9 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 
 	// create the file to write the output to
 	oname := getFinalFileName(reduceJob.ID)
-	tempFileHandle, err := ioutil.TempFile("", oname)
+	tempFileHandle, err := ioutil.TempFile("", "*|"+oname)
 	if err != nil {
 		log.Fatalf("failed to create tempFile in reduce phase: %v", oname)
-	}
-
-	//ofile, err := os.Create(oname)
-
-	if err != nil {
-		log.Fatalf("failed to create the file %v", oname)
 	}
 
 	//
@@ -219,7 +211,7 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 	}
 
 	// notify master about finishing reduce
-	notifyRes := NotifyResponse{}
+	notifyRes := NotifyResponse{false}
 	call("Master.NotifyFinish", reduceJob, &notifyRes)
 
 	// if acknowledged, rename the tempFile
@@ -271,12 +263,6 @@ func call(rpcname string, args interface{}, reply interface{}) error {
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
-	// if err == nil {
-	// 	return true
-	// }
-
-	//fmt.Println(err)
-	// return false
 	return err
 }
 
@@ -311,8 +297,6 @@ func getFinalFileName(nth int) string {
 // create a file or open an existing file with given file name
 func openOrCreate(fileLoc string) (target *os.File, err error) {
 	if fileExists(fileLoc) {
-		// fmt.Printf("file exist: %v", fileLoc)
-		// fmt.Println("")
 		target, err = os.Open(fileLoc)
 	} else {
 		target, err = os.Create(fileLoc)
