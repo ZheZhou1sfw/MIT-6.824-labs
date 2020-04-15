@@ -114,7 +114,7 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 
 		curKva := kvaArray[i]
 		//fileHandle, err := openOrCreate(interFileName)
-		tempFileHandle, err := ioutil.TempFile("", "*|"+interFileName)
+		tempFileHandle, err := ioutil.TempFile("", interFileName+"*|")
 		if err != nil {
 			log.Fatalf("failed to create tempFile in map phase: %v", interFileName)
 		}
@@ -132,7 +132,7 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 	}
 
 	// notify master about finish
-	notifyRes := NotifyResponse{}
+	notifyRes := NotifyResponse{false}
 	call("Master.NotifyFinish", mapJob, &notifyRes)
 
 	// if acknowledged, rename the tempFile
@@ -143,6 +143,8 @@ func doMap(mapJob *MrJob, mapf func(string, string) []KeyValue) (err error) {
 				log.Fatalf("cannot rename tempfile %v to real fileName '%v'", tempFileHandle.Name(), realFileName)
 			}
 		}
+	} else {
+		fmt.Println("cannot receive ack in map phase")
 	}
 
 	return
@@ -178,7 +180,7 @@ func doReduce(reduceJob *MrJob, reducef func(string, []string) string) (err erro
 
 	// create the file to write the output to
 	oname := getFinalFileName(reduceJob.ID)
-	tempFileHandle, err := ioutil.TempFile("", "*|"+oname)
+	tempFileHandle, err := ioutil.TempFile("", oname+"*|")
 	if err != nil {
 		log.Fatalf("failed to create tempFile in reduce phase: %v", oname)
 	}

@@ -37,6 +37,7 @@ type RPCresponse struct {
 // RPC structures used for RPC in "NotifyFinish"
 type NotifyResponse struct {
 	Ack bool
+	// hashkey string
 }
 
 /*
@@ -49,6 +50,7 @@ type MrJob struct {
 	FileLoc  string
 	ID       int // for map, it's the mapID, for reduce, it's the nReduce'th
 	NReduce  int
+	Hashkey  string // uid
 }
 
 // type MapJob struct {

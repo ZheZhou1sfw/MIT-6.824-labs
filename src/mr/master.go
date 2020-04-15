@@ -2,36 +2,41 @@ package mr
 
 import (
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Master struct {
 	// Your definitions here.
-	mapJobs                    []MrJob
-	reduceJobs                 []MrJob
-	runningMapJobs             []*MrJob
-	runningMapJobsTimeMap      map[*MrJob]time.Time
-	runningReduceWorker        []int
-	runningReduceWorkerTimeMap map[int]time.Time
-	finishedReduceWorker       []int
-	nReduce                    int
+	mapJobs    []MrJob
+	reduceJobs []MrJob
+
+	runningMapJobs        []*MrJob
+	runningMapJobsTimeMap map[*MrJob]time.Time
+
+	reduceGenerated          bool
+	runningReduceJobs        []*MrJob
+	runningReduceJobsTimeMap map[*MrJob]time.Time
+
+	nReduce    int
+	hashKeyMap map[string]bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 	// -------Debug Info -------- //
 	// fmt.Println("want a job")
-	// fmt.Printf("Number of runningReduceWorker: %v || Number of finishedReducerWorker: %v", len(m.runningMapJobs), len(m.finishedReduceWorker))
-	// fmt.Println("")
-	// fmt.Println(m.runningReduceWorker)
-	// fmt.Println(m.runningReduceWorkerTimeMap)
-	// fmt.Println(m.finishedReduceWorker)
+	// fmt.Println(m.mapJobs)
+	// fmt.Println(m.runningMapJobs)
+	// fmt.Println(m.reduceJobs)
+	// fmt.Println(m.runningReduceJobs)
+	// fmt.Println(m.hashKeyMap)
 	// fmt.Println("-----------")
 
 	// check if any pending job is over due
@@ -49,49 +54,47 @@ func (m *Master) GetAJob(req RPCrequest, res *RPCresponse) (err error) {
 			toDeliver = createOnHoldJob()
 		}
 	} else {
-		nextReduceID := findNextReduceWorkerID(m)
-		// can't successfully create a reduce job
-		if nextReduceID == -1 {
-			// all jobs done
-			if len(m.runningReduceWorker) == 0 {
-				toDeliver = createExitJob()
-				// some reduce jobs are processing but no more undispatched jobs
-			} else {
-				toDeliver = createOnHoldJob()
-			}
-			// could successfully dispatch a reduce job
-		} else {
-			// The reduce job should base on all map job, but is for one specific reduceID (nReduceIDs in total)
-			toDeliver = createReduceJob(m, nextReduceID)
+		// if it's the first time map finishes, we need to generate all reduce jobs
+		if !m.reduceGenerated {
+			generateReduceJobs(m)
+			m.reduceGenerated = true
 		}
+
+		// deliver a reduce job if there is any reduce job left
+		if len(m.reduceJobs) > 0 {
+			toDeliver = createReduceJob(m)
+		} else {
+			toDeliver = createOnHoldJob()
+		}
+
 	}
 	res.CurJob = toDeliver
+	// fmt.Println(toDeliver)
 	return // err is nil by default
 }
 
 // notify master one a worker finished a job
 func (m *Master) NotifyFinish(job *MrJob, res *NotifyResponse) (err error) {
+	// check if it's a outdated worker
+	if _, ok := m.hashKeyMap[job.Hashkey]; !ok {
+		res.Ack = false
+		return
+	}
+
 	if job.JobType == "map" {
 		m.runningMapJobs = deleteAndReslice(m.runningMapJobs, job.FileName)
 		newReduceJob := *job // make a copy
 		newReduceJob.JobType = "reduce"
 		m.reduceJobs = append(m.reduceJobs, newReduceJob)
 	} else if job.JobType == "reduce" {
-		// find and remove runningReduceJobID
-		reduceID := job.ID
-		for i, rid := range m.runningReduceWorker {
-			if rid == reduceID {
-				m.runningReduceWorker = append(m.runningReduceWorker[:i], m.runningReduceWorker[i+1:]...)
-				m.finishedReduceWorker = append(m.finishedReduceWorker, reduceID)
-				delete(m.runningReduceWorkerTimeMap, rid)
-				break
-			}
-		}
+		m.runningReduceJobs = deleteAndReslice(m.runningReduceJobs, job.FileName)
 	} else {
 		log.Fatal("Cannot notifyFinish this job type" + job.JobType)
 	}
 
+	delete(m.hashKeyMap, job.Hashkey)
 	res.Ack = true
+
 	return
 }
 
@@ -129,7 +132,7 @@ func (m *Master) Done() bool {
 	ret := false
 
 	// Your code here.
-	if len(m.mapJobs)+len(m.runningMapJobs)+len(m.runningReduceWorker) == 0 && len(m.finishedReduceWorker) == m.nReduce {
+	if len(m.mapJobs)+len(m.runningMapJobs)+len(m.reduceJobs)+len(m.runningReduceJobs) == 0 {
 		ret = true
 	}
 	return ret
@@ -150,15 +153,16 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.mapJobs = make([]MrJob, 0, inLen)
 	m.runningMapJobs = make([]*MrJob, 0, inLen)
 	m.reduceJobs = make([]MrJob, 0, nReduce)
-	m.runningReduceWorker = make([]int, 0, nReduce)
+	m.runningReduceJobs = make([]*MrJob, 0, nReduce)
 	m.runningMapJobsTimeMap = make(map[*MrJob]time.Time)
-	m.finishedReduceWorker = make([]int, 0, nReduce)
-	m.runningReduceWorkerTimeMap = make(map[int]time.Time)
+	m.runningReduceJobsTimeMap = make(map[*MrJob]time.Time)
 	m.nReduce = nReduce
+	m.hashKeyMap = make(map[string]bool)
+	m.reduceGenerated = false
 
 	// create mapjobs from input files
 	for i, file := range files {
-		m.mapJobs = append(m.mapJobs, MrJob{"map", RemoveDotTxt(file), file, i + 1, nReduce})
+		m.mapJobs = append(m.mapJobs, MrJob{"map", RemoveDotTxt(file), file, i + 1, nReduce, ""})
 	}
 
 	m.server()
@@ -167,12 +171,12 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 // Helper function to create an "hold" MrJob
 func createOnHoldJob() *MrJob {
-	return &MrJob{"hold", "", "", 0, 0}
+	return &MrJob{"hold", "", "", 0, 0, ""}
 }
 
 // Helper function to create an "exit" MrJob
 func createExitJob() *MrJob {
-	return &MrJob{"exit", "", "", 0, 0}
+	return &MrJob{"exit", "", "", 0, 0, ""}
 }
 
 // Helper for create map job
@@ -182,27 +186,26 @@ func createMapJob(m *Master) *MrJob {
 	m.runningMapJobs = append(m.runningMapJobs, newMapJob)
 
 	m.runningMapJobsTimeMap[newMapJob] = time.Now()
+	// generate uid and relate it with map job
+	newMapJob.Hashkey = generateRandomString(16)
+	m.hashKeyMap[newMapJob.Hashkey] = true
 
 	return newMapJob
 }
 
 // Helper function to create an ReduceJob based on reduce ID
 // "Generate all file names with all jobs and that reduceID"
-func createReduceJob(m *Master, nextReduceID int) *MrJob {
-	fileNameBatch := ""
-	// fileNameBatch, fileLocBatch := "", ""
-	for _, reduceJob := range m.reduceJobs {
-		fileNameBatch = fileNameBatch + "inter" + "-" + reduceJob.FileName + "-" + strconv.Itoa(nextReduceID) + "|"
-		// fileLocBatch := fileNameBatch
-	}
-	newReduceJob := MrJob{"reduce", fileNameBatch, fileNameBatch, nextReduceID, m.nReduce}
+func createReduceJob(m *Master) *MrJob {
+	newReduceJob := &m.reduceJobs[0]
+	m.reduceJobs = m.reduceJobs[1:]
+	m.runningReduceJobs = append(m.runningReduceJobs, newReduceJob)
 
-	// update Master's reduce tables
-	m.runningReduceWorker = append(m.runningReduceWorker, nextReduceID)
+	m.runningReduceJobsTimeMap[newReduceJob] = time.Now()
+	// generate uid and relate it with reduce job
+	newReduceJob.Hashkey = generateRandomString(16)
+	m.hashKeyMap[newReduceJob.Hashkey] = true
 
-	m.runningReduceWorkerTimeMap[nextReduceID] = time.Now()
-
-	return &newReduceJob
+	return newReduceJob
 }
 
 // find and delete an element in a slice, return the resliced result
@@ -219,33 +222,6 @@ func deleteAndReslice(jobs []*MrJob, fileName string) []*MrJob {
 	return q
 }
 
-// Helper function that returns the next unassigned reduceWorkerID (nReduce in total)
-// -1 means all used
-func findNextReduceWorkerID(m *Master) int {
-	arr := make([]int, 0, m.nReduce)
-	for _, id := range append(m.finishedReduceWorker, m.runningReduceWorker...) {
-		arr = append(arr, id)
-	}
-	// arr is empty, return first
-	if len(arr) == 0 {
-		return 1
-	}
-
-	sort.Ints(arr)
-
-	id := 1
-	for idx := 0; idx < len(arr); idx, id = idx+1, id+1 {
-		// missing id here
-		if arr[idx] != id {
-			return id
-		}
-	}
-	if id <= m.nReduce {
-		return id
-	}
-	return -1
-}
-
 func (m *Master) checkPendingJobs() {
 	// milliseconds
 	timeout := int64(10000)
@@ -258,22 +234,56 @@ func (m *Master) checkPendingJobs() {
 		if curTime.Sub(m.runningMapJobsTimeMap[mapJob]).Nanoseconds()/1e6 > timeout {
 			delete(m.runningMapJobsTimeMap, mapJob)
 			m.mapJobs = append(m.mapJobs, *mapJob)
+			delete(m.hashKeyMap, mapJob.Hashkey)
 		} else {
 			newRunningMapJobs = append(newRunningMapJobs, mapJob)
 		}
 	}
 	m.runningMapJobs = newRunningMapJobs
 
-	newRunningReduceWorker := []int{}
+	newRunningReduceJobs := []*MrJob{}
 	// check running reduce jobs
-	for _, reduceWorkerID := range m.runningReduceWorker {
+	for _, reduceJob := range m.runningReduceJobs {
 		curTime := time.Now()
 		// if greater than certain period, we assume the worker is dead. Reassign the job.
-		if curTime.Sub(m.runningReduceWorkerTimeMap[reduceWorkerID]).Nanoseconds()/1e6 > timeout {
-			delete(m.runningReduceWorkerTimeMap, reduceWorkerID)
+		if curTime.Sub(m.runningReduceJobsTimeMap[reduceJob]).Nanoseconds()/1e6 > timeout {
+			delete(m.runningReduceJobsTimeMap, reduceJob)
+			m.reduceJobs = append(m.reduceJobs, *reduceJob)
+			delete(m.hashKeyMap, reduceJob.Hashkey)
 		} else {
-			newRunningReduceWorker = append(newRunningReduceWorker, reduceWorkerID)
+			newRunningReduceJobs = append(newRunningReduceJobs, reduceJob)
 		}
 	}
-	m.runningReduceWorker = newRunningReduceWorker
+	m.runningReduceJobs = newRunningReduceJobs
+}
+
+// generate a random string, input the length of string
+func generateRandomString(length int) (str string) {
+	rand.Seed(time.Now().UnixNano())
+	chars := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ" +
+		"abcdefghijklmnopqrstuvwxyzåäö" +
+		"0123456789")
+	var b strings.Builder
+	for i := 0; i < length; i++ {
+		b.WriteRune(chars[rand.Intn(len(chars))])
+	}
+	str = b.String() // E.g. "ExcbsVQs"
+	return
+}
+
+func generateReduceJobs(m *Master) {
+	newReduceJobs := make([]MrJob, 0, m.nReduce)
+	for nextReduceID := 1; nextReduceID <= m.nReduce; nextReduceID++ {
+		fileNameBatch := ""
+		for _, reduceJob := range m.reduceJobs {
+			fileNameBatch = fileNameBatch + "inter" + "-" + reduceJob.FileName + "-" + strconv.Itoa(nextReduceID) + "|"
+			// fileLocBatch := fileNameBatch
+		}
+		newReduceJob := MrJob{"reduce", fileNameBatch, fileNameBatch, nextReduceID, m.nReduce, ""}
+		m.hashKeyMap[newReduceJob.Hashkey] = true
+		// update Master's reduce tables
+
+		newReduceJobs = append(newReduceJobs, newReduceJob)
+	}
+	m.reduceJobs = newReduceJobs
 }
