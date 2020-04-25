@@ -17,14 +17,18 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "sync/atomic"
-import "../labrpc"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"../labrpc"
+)
 
 // import "bytes"
 // import "../labgob"
-
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -37,10 +41,21 @@ import "../labrpc"
 // snapshots) on the applyCh; at that point you can add fields to
 // ApplyMsg, but set CommandValid to false for these other uses.
 //
+
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+}
+
+//
+// a log structre that contains:
+//    1. command for state macchine
+//    2. term that this log is received by the leader
+//
+type logStruct struct {
+	term    int
+	Command interface{}
 }
 
 //
@@ -57,6 +72,21 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// Persistent states on all servers
+	currentTerm int
+	votedFor    int // -1 for nil
+	log         []*logStruct
+
+	// Volatile states on all servers
+	commitIndex         int
+	lastApplied         int
+	lastHeardFromLeader time.Time
+	timeLimit           time.Duration // TimeLimit for leader election
+
+	// Volatile states on leaders only!
+	isLeader   bool
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -66,6 +96,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	term = rf.currentTerm
+	isleader = rf.isLeader
+
 	return term, isleader
 }
 
@@ -83,8 +116,8 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
-}
 
+}
 
 //
 // restore previously persisted state.
@@ -108,15 +141,19 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	// 2A
+	term         int
+	candidateID  int
+	lastLogIndex int
+	lastLogTerm  int
+	// 2B
+
 }
 
 //
@@ -125,6 +162,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	term        int
+	voteGranted bool
 }
 
 //
@@ -168,7 +207,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -190,8 +228,65 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
-
 	return index, term, isLeader
+}
+
+//
+// 'checkTimeouts' regularly checks if the election timeout is due
+//	and starts an new election.
+//  This function is always minitored by a separate go routine.
+//  A leader server will suppress this functionality / replaced with heartbeat
+//
+//  Return true if time out and false meaning not time out.
+//
+func (rf *Raft) checkTimeouts() bool {
+	// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
+	durationPassed := time.Now().Sub(rf.lastHeardFromLeader)
+	// overdue, should start an election
+	if durationPassed > rf.timeLimit {
+		res := rf.startElection()
+	} else {
+		// sleep for a while
+		time.Sleep(getRandTimeoutDuration(40))
+	}
+}
+
+func (rf *Raft) startElection() bool {
+	// always vote for itself
+	majorityCount := 1
+	for i, peer := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		// sendRequestVote rpc to peers in goroutine, and deal with reply
+		targetID := i // save index
+		go func() {
+			// create struct
+			lastLogTerm := -1
+			if len(rf.log) > 0 {
+				lastLogTerm := rf.log[len(rf.log)-1].term
+			}
+			voteArgs := RequestVoteArgs{
+				rf.currentTerm,
+				rf.me,
+				len(rf.log),
+				lastLogTerm,
+			}
+			voteReply := RequestVoteReply{
+				-1,
+				false,
+			}
+			// send rpc call
+			rpcSuccess := rf.sendRequestVote(targetID, &voteArgs, &voteReply)
+			if !rpcSuccess {
+				fmt.Printf("snedRequestVote RPC is not successful from senderID %v to receiverID %v", rf.me, targetID)
+			} else {
+				// successful rpc, process result here
+
+			}
+		}()
+
+	}
 }
 
 //
@@ -215,6 +310,11 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// get random timeout, seconds
+func getRandTimeoutDuration(base int) time.Duration {
+	return time.Millisecond * time.Duration(base/4*3+rand.Intn(base)/3)
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -235,9 +335,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 
+	// persistent states
+	rf.currentTerm = 0
+	rf.votedFor = -1 // represent nil
+	rf.log = []*logStruct{}
+
+	// volatile states
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	// leader for states
+
+	rf.isLeader = false
+	rf.nextIndex = []int{}
+	rf.matchIndex = []int{}
+
+	// timeout & election parameters
+	rf.lastHeardFromLeader = time.Now()
+	rf.timeLimit = getRandTimeoutDuration(800)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	return rf
 }
