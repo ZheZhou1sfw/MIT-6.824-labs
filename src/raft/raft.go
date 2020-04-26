@@ -89,8 +89,7 @@ type Raft struct {
 	matchIndex []int
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+// return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int
@@ -148,10 +147,10 @@ func (rf *Raft) readPersist(data []byte) {
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	// 2A
-	term         int
-	candidateID  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
 	// 2B
 
 }
@@ -162,8 +161,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -171,6 +170,44 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	// 2A
+	reply.Term = rf.currentTerm
+	if rf.currentTerm > args.Term {
+		reply.VoteGranted = false
+	} else if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
+		lastLogTerm := rf.log[len(rf.log)-1].term
+		lastLogIndx := len(rf.log)
+		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndx) {
+			reply.VoteGranted = true
+		}
+	}
+}
+
+//
+// AppendEntries RPC arguments structure.
+//
+type AppendEntriesArgs struct {
+	// Your data here (2A).
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LogEntires   []*logStruct
+	LeaderCommit int
+}
+
+//
+// AppendEntries RPC reply structure.
+//
+type AppendEntriesReply struct {
+	// Your data here (2A).
+	Term    int
+	Success bool
+}
+
+// AppendEntries RPC handler
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
 }
 
 //
@@ -234,37 +271,68 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 // 'checkTimeouts' regularly checks if the election timeout is due
 //	and starts an new election.
-//  This function is always minitored by a separate go routine.
-//  A leader server will suppress this functionality / replaced with heartbeat
 //
-//  Return true if time out and false meaning not time out.
+//  This function is always minitored by a dedicated goroutine.
+//  A leader server will suppress(end) this functionality / replaced with heartbeat
 //
-func (rf *Raft) checkTimeouts() bool {
-	// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
-	durationPassed := time.Now().Sub(rf.lastHeardFromLeader)
-	// overdue, should start an election
-	if durationPassed > rf.timeLimit {
-		res := rf.startElection()
-	} else {
-		// sleep for a while
-		time.Sleep(getRandTimeoutDuration(40))
+func (rf *Raft) checkTimeouts() {
+	for {
+		// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
+		durationPassed := time.Now().Sub(rf.lastHeardFromLeader)
+		// leader doesn't need checkTimeouts
+		if rf.isLeader {
+			return
+		} else if durationPassed > rf.timeLimit { // overdue, should start an election
+			// have a separate goroutine deal with election because checkTimeouts need to keep monitoring
+			go rf.startElection()
+			// reset election timer
+			rf.lastHeardFromLeader = time.Now()
+		} else {
+			// sleep for a while
+			time.Sleep(getRandTimeoutDuration(40))
+		}
 	}
 }
 
-func (rf *Raft) startElection() bool {
+//
+// 'heartBeats' regularly sends heart beats to followers.
+//
+// This should be run on a dedicated goroutine and only a leader will run this.
+//
+func (rf *Raft) heartBeats() {
+
+}
+
+func (rf *Raft) startElection() {
 	// always vote for itself
 	majorityCount := 1
-	for i, peer := range rf.peers {
+	wg := sync.WaitGroup{}
+	electionLock := sync.Mutex{}
+
+	// Increment current Term
+	rf.currentTerm++
+
+	// record current term that the election starts
+	// If later this election time out then this term would be less than rf.currentTerm,
+	// meaning this election result should be discarded
+	rf.mu.Lock()
+	recordTerm := rf.currentTerm
+	rf.mu.Unlock()
+
+	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
+		wg.Add(1)
 		// sendRequestVote rpc to peers in goroutine, and deal with reply
 		targetID := i // save index
-		go func() {
+		go func(wg *sync.WaitGroup) {
+			defer wg.Done()
+
 			// create struct
 			lastLogTerm := -1
 			if len(rf.log) > 0 {
-				lastLogTerm := rf.log[len(rf.log)-1].term
+				lastLogTerm = rf.log[len(rf.log)-1].term
 			}
 			voteArgs := RequestVoteArgs{
 				rf.currentTerm,
@@ -283,10 +351,41 @@ func (rf *Raft) startElection() bool {
 			} else {
 				// successful rpc, process result here
 
+				// if the server vote for you
+				if voteReply.VoteGranted {
+					electionLock.Lock()
+					majorityCount++
+					electionLock.Unlock()
+				} else {
+					rf.mu.Lock()
+					// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower!
+					if voteReply.Term > rf.currentTerm {
+						rf.currentTerm = voteReply.Term
+					}
+					rf.mu.Unlock()
+				}
 			}
-		}()
+		}(&wg)
 
 	}
+	wg.Wait()
+	// election succeed
+	rf.mu.Lock()
+	// when it has a majority of votes
+	// and the election term hasn't changed,
+	// i.e. the server hasn't started a new election && no other leader has won
+	if majorityCount > len(rf.peers)/2 && rf.currentTerm == recordTerm {
+		rf.isLeader = true
+		// !!!!!!!!!!!!!!!!!!
+		// !!!!!!!!!!!!!!!!!!
+		// !!!!!!!!!!!!!!!!!!
+		// Code for leader initialization
+
+		// !!!!!!!!!!!!!!!!!!
+		// !!!!!!!!!!!!!!!!!!
+		// !!!!!!!!!!!!!!!!!!
+	}
+	rf.mu.Unlock()
 }
 
 //
@@ -310,7 +409,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// get random timeout, seconds
+// get random timeout, in Milliseconds
 func getRandTimeoutDuration(base int) time.Duration {
 	return time.Millisecond * time.Duration(base/4*3+rand.Intn(base)/3)
 }
