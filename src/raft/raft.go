@@ -173,11 +173,16 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	// 2A
-	reply.Term = rf.currentTerm
 	rf.mu.Lock()
 	if rf.currentTerm > args.Term {
 		reply.VoteGranted = false
 	} else {
+		// update term
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
+			rf.votedFor = -1
+		}
+
 		if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
 			lastLogTerm := -1
 			if len(rf.log) > 0 {
@@ -190,6 +195,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			}
 		}
 	}
+	reply.Term = rf.currentTerm
 	rf.mu.Unlock()
 }
 
@@ -226,8 +232,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			go func() { rf.checkTimeouts() }()
 		}
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
 		// this will abort any undergoing election because
 		// the new term is promised to be higher than the term during election
+	}
+	// empty log entry means heartbeat, gonna reset time out value
+	if args.LogEntires == nil || len(args.LogEntires) == 0 {
+		rf.lastHeardFromLeader = time.Now()
 	}
 	reply.Term = rf.currentTerm
 	rf.mu.Unlock()
@@ -312,24 +323,25 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) checkTimeouts() {
 	for {
+		rf.mu.Lock()
 		// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
 		durationPassed := time.Now().Sub(rf.lastHeardFromLeader)
 		// leader doesn't need checkTimeouts
-		rf.mu.Lock()
 		if rf.isLeader {
 			rf.mu.Unlock()
 			return
-		} else if durationPassed > rf.timeLimit { // overdue, should start an election
+		} else if durationPassed > rf.timeLimit && rf.votedFor == -1 { // overdue, should start an election
 			// have a separate goroutine deal with election because checkTimeouts need to keep monitoring
+			// only do this when we haven't voted for any other candidates yet
 			go func() { rf.startElection() }()
-			// reset election timer
 
+			// reset election timer
 			rf.lastHeardFromLeader = time.Now()
 			rf.mu.Unlock()
 		} else {
 			// sleep for a while
 			rf.mu.Unlock()
-			time.Sleep(getRandTimeoutDuration(40))
+			time.Sleep(time.Millisecond * 10)
 		}
 	}
 }
@@ -340,8 +352,11 @@ func (rf *Raft) checkTimeouts() {
 // This should be run on a dedicated goroutine and only a leader will run this.
 //
 func (rf *Raft) heartBeats() {
-	// the leader will
-	for rf.isLeader {
+	// only the leader is required to do this
+	rf.mu.Lock()
+	stillLeader := rf.isLeader
+	rf.mu.Unlock()
+	for stillLeader {
 		// send heartbeat to followers
 		for i := range rf.peers {
 			if i == rf.me {
@@ -374,19 +389,31 @@ func (rf *Raft) heartBeats() {
 				}
 				// send RPC call
 				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
+
 				rf.mu.Lock()
 				if !rpcSuccess {
-					fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v", rf.me, targetID)
+					//fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+					rf.mu.Unlock()
 				} else {
+
 					// if the follower has a higher term than the leader, the leader should convert to follower
 					if reply.Term > rf.currentTerm {
 						rf.isLeader = false
+						rf.currentTerm = reply.Term
+						rf.votedFor = -1
+						rf.mu.Unlock()
 						go func() { rf.checkTimeouts() }()
+					} else {
+						rf.mu.Unlock()
 					}
 				}
-				rf.mu.Unlock()
 			}()
 		}
+		// sleep for a while. Limit 10 heartbeats per second
+		time.Sleep(time.Millisecond * 120)
+		rf.mu.Lock()
+		stillLeader = rf.isLeader
+		rf.mu.Unlock()
 	}
 }
 
@@ -399,8 +426,10 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	// Increment current Term
 	rf.currentTerm++
-	// clear voted for
-	rf.votedFor = -1
+	// vote for yourself
+	rf.votedFor = rf.me
+	// // clear voted for
+	// rf.votedFor = -1
 
 	// record current term that the election starts
 	// If later this election time out then this term would be less than rf.currentTerm,
@@ -436,10 +465,11 @@ func (rf *Raft) startElection() {
 				false,
 			}
 			// send rpc call
+			rf.mu.Unlock()
 			rpcSuccess := rf.sendRequestVote(targetID, &voteArgs, &voteReply)
 			rf.mu.Lock()
 			if !rpcSuccess {
-				fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v", rf.me, targetID)
+				//fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 			} else {
 				// successful rpc, process result here
 
@@ -449,14 +479,14 @@ func (rf *Raft) startElection() {
 					majorityCount++
 					electionLock.Unlock()
 				} else {
-					rf.mu.Lock()
 					// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower!
 					if voteReply.Term > rf.currentTerm {
 						rf.currentTerm = voteReply.Term
+						rf.votedFor = -1
 					}
-					rf.mu.Unlock()
 				}
 			}
+			rf.mu.Unlock()
 		}(&wg)
 
 	}
@@ -466,8 +496,11 @@ func (rf *Raft) startElection() {
 	// when it has a majority of votes
 	// and the election term hasn't changed,
 	// i.e. the server hasn't started a new election && no other leader has won
+	fmt.Println("majority count is ", majorityCount)
+	fmt.Println(rf.currentTerm, recordTerm, rf.me)
 	if majorityCount > len(rf.peers)/2 && rf.currentTerm == recordTerm {
 		rf.isLeader = true
+		fmt.Printf("new leader is ID %v with term %v \n", rf.me, rf.currentTerm)
 		// !!!!!!!!!!!!!!!!!!
 		// !!!!!!!!!!!!!!!!!!
 		// !!!!!!!!!!!!!!!!!!
@@ -501,9 +534,10 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// get random timeout, in Milliseconds
+// get random timeout, in Milliseconds, increase
 func getRandTimeoutDuration(base int) time.Duration {
-	return time.Millisecond * time.Duration(base/4*3+rand.Intn(base)/3)
+	//return time.Millisecond * time.Duration(base/3+3*rand.Intn(base)/3)
+	return time.Millisecond * time.Duration(600+rand.Intn(270))
 }
 
 //
@@ -543,7 +577,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// timeout & election parameters
 	rf.lastHeardFromLeader = time.Now()
-	rf.timeLimit = getRandTimeoutDuration(800)
+	rf.timeLimit = getRandTimeoutDuration(1000)
+	fmt.Println(rf.timeLimit)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
