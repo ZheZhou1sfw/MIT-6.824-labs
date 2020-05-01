@@ -259,8 +259,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// this will abort any undergoing election because
 		// the new term is promised to be higher than the term during election
 	}
-	// empty log entry means heartbeat, gonna reset time out value
-	rf.resetTimer()
+	if args.Term >= rf.currentTerm {
+		// empty log entry means heartbeat, gonna reset time out value
+		// Normal AppendEntries RPC from leader will reset timer as well
+		// must prevent invalid leader (older terms) to reset the timer
+		rf.resetTimer()
+	}
 
 	reply.Term = rf.currentTerm
 	rf.mu.Unlock()
