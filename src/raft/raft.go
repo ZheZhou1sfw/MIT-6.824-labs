@@ -88,6 +88,9 @@ type Raft struct {
 	isLeader   bool
 	nextIndex  []int
 	matchIndex []int
+
+	// condition variable sync.Cond for triggering applyCommited
+	applyCond *sync.Cond
 }
 
 // return currentTerm and whether this server believes it is the leader.
@@ -126,7 +129,7 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 	} else if key == "leader" {
 		rf.isLeader = true
 		fmt.Printf("new leader is ID %v with term %v \n", rf.me, rf.currentTerm)
-		go func() { rf.heartBeats() }()
+		go func() { rf.enhancedHeartBeats() }()
 	}
 }
 
@@ -167,6 +170,28 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+}
+
+//
+// A goroutine that periodically apply newly commited command to the channel (application)
+// Using Conditional variable, this goroutine will only be waken when signaled.
+func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
+	for {
+		rf.applyCond.L.Lock()
+		rf.applyCond.Wait()
+
+		// ready to apply command
+		rf.mu.Lock()
+		if rf.commitIndex > rf.lastApplied {
+			// first index is 1, so we always get (index - 1)th log
+			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1], rf.commitIndex}
+			applyCh <- newMsg
+			rf.lastApplied++
+		}
+		rf.mu.Unlock()
+
+		rf.applyCond.L.Unlock()
+	}
 }
 
 //
@@ -262,7 +287,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.currentTerm {
 		// empty log entry means heartbeat, gonna reset time out value
 		// Normal AppendEntries RPC from leader will reset timer as well
-		// must prevent invalid leader (older terms) to reset the timer
+		// must prevent invalid leader (older terms) to reset the timer`
 		rf.resetTimer()
 	}
 
@@ -337,6 +362,40 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
+	rf.mu.Lock()
+	// if not leader, return false immediately
+	if !rf.isLeader {
+		isLeader = false
+		rf.mu.Unlock()
+		return index, term, isLeader
+	}
+
+	// don't need to have a goroutine to work on commit this command
+	// because of the enhancedHeartBeats() will check this periodically
+
+	// apply to leader's local log, should be the next index of the current commitIndex.
+	// If that location is occupied, definitely sends a warning
+	targetCommitIndex := rf.commitIndex + 1
+	if rf.log[targetCommitIndex] != nil {
+		fmt.Println("Leader's local log already occupied. Some elements get overwritten!!")
+	}
+	rf.log[targetCommitIndex] = &LogStruct{rf.currentTerm, command}
+
+	// if commited, then the index should be the next index of the current commitIndex
+	index = targetCommitIndex
+	term = rf.currentTerm
+
+	// return when this is applied to local machine
+	currentApplied := rf.lastApplied
+	rf.mu.Unlock()
+
+	for currentApplied < targetCommitIndex {
+		time.Sleep(time.Millisecond * 20)
+		rf.mu.Lock()
+		currentApplied = rf.lastApplied
+		rf.mu.Unlock()
+	}
+
 	return index, term, isLeader
 }
 
@@ -372,11 +431,13 @@ func (rf *Raft) checkTimeouts() {
 }
 
 //
-// 'heartBeats' regularly sends heart beats to followers.
+// 'enhancedHeartBeats' regularly sends heart beats to followers.
+//	This should be run on a dedicated goroutine and only a leader will run this.
 //
-// This should be run on a dedicated goroutine and only a leader will run this.
+// This function will send heart beats when no updates are needed.
+// When last log index ≥ nextIndex for a follower, then there needs an update for this follower.
 //
-func (rf *Raft) heartBeats() {
+func (rf *Raft) enhancedHeartBeats() {
 	// only the leader is required to do this
 	rf.mu.Lock()
 	stillLeader := rf.isLeader
@@ -596,6 +657,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = []int{}
 	rf.matchIndex = []int{}
 
+	// initialize Cond variable
+	m := sync.Mutex{}
+	rf.applyCond = sync.NewCond(&m)
+
 	// timer parameters
 
 	// initialize from state persisted before a crash
@@ -606,6 +671,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start checktimeouts
 	go func() { rf.checkTimeouts() }()
+
+	// start applying commited messages
+	go func() { rf.applyCommited(applyCh) }()
 
 	return rf
 }
