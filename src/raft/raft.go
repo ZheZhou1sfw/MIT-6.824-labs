@@ -129,6 +129,14 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 	} else if key == "leader" {
 		rf.isLeader = true
 		fmt.Printf("new leader is ID %v with term %v \n", rf.me, rf.currentTerm)
+		// initialize nextIndex[] and matchIndex[]
+		rf.nextIndex = make([]int, len(rf.peers))
+		rf.matchIndex = make([]int, len(rf.peers))
+		for i := 0; i < len(rf.peers); i++ {
+			rf.nextIndex[i] = len(rf.log) + 1
+			rf.matchIndex[i] = 0
+		}
+		// start enhancedHeartBeats()
 		go func() { rf.enhancedHeartBeats() }()
 	}
 }
@@ -279,7 +287,12 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// 2A deal with heartbeats'
 	rf.mu.Lock()
-	if args.Term > rf.currentTerm {
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		rf.mu.Unlock()
+		return
+	} else if args.Term > rf.currentTerm {
 		rf.updateState("follower", args.Term)
 		// this will abort any undergoing election because
 		// the new term is promised to be higher than the term during election
@@ -292,6 +305,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	reply.Term = rf.currentTerm
+	reply.Success = true
 	rf.mu.Unlock()
 	// 2B deal with log entries
 	if len(args.LogEntires) > 0 {
@@ -452,45 +466,69 @@ func (rf *Raft) enhancedHeartBeats() {
 			targetID := i // save index
 			// this goroutine send RPC, process RPC and establish leadership having majority votes
 			go func() {
-				// create args structure
-				prevLogTerm := -1
+
+				isSuccess := false
+				nextIndex := rf.nextIndex[targetID]
 				rf.mu.Lock()
-				if len(rf.log) > 0 {
-					prevLogTerm = rf.log[len(rf.log)-1].Term
-				}
-				args := AppendEntriesArgs{
-					rf.currentTerm,
-					rf.me,
-					len(rf.log), // prevLogIndex
-					prevLogTerm,
-					nil,
-					rf.commitIndex,
-				}
+				// if the response is not successful, then there are two possible causes:
+				// 1. This leader is outdated and it should step down immediately (break out of the loop)
+				// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
+				for !isSuccess {
+					// create args structure
+					rf.mu.Lock()
 
-				rf.mu.Unlock()
+					// last log index
+					lastRfLogIndex := len(rf.log)
 
-				reply := AppendEntriesReply{
-					-1,
-					false,
-				}
-				// send RPC call
-				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
+					// last log term
+					prevLogTerm := -1
+					if len(rf.log) > 0 {
+						prevLogTerm = rf.log[len(rf.log)-1].Term
+					}
 
-				rf.mu.Lock()
-				if !rpcSuccess {
-					//fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+					// log entries to apply
+					logs := []*LogStruct{}
+
+					if lastRfLogIndex >= nextIndex {
+						logs = rf.log[nextIndex:]
+					}
+
+					args := AppendEntriesArgs{
+						rf.currentTerm,
+						rf.me,
+						lastRfLogIndex, // prevLogIndex
+						prevLogTerm,
+						logs,
+						rf.commitIndex,
+					}
+
 					rf.mu.Unlock()
-				} else {
 
-					// if the follower has a higher term than the leader, the leader should convert to follower
-					if reply.Term > rf.currentTerm {
-						rf.updateState("follower", reply.Term)
+					reply := AppendEntriesReply{
+						-1,
+						false,
+					}
+					// send RPC call
+					rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
+					isSuccess = reply.Success
+
+					rf.mu.Lock()
+					if !rpcSuccess {
+						//fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 						rf.mu.Unlock()
-						go func() { rf.checkTimeouts() }()
 					} else {
-						rf.mu.Unlock()
+						// if the follower has a higher term than the leader, the leader should convert to follower
+						if reply.Term > rf.currentTerm {
+							rf.updateState("follower", reply.Term)
+							rf.mu.Unlock()
+							go func() { rf.checkTimeouts() }()
+							break
+						} else { // because of log inconsistency, decrement nextIndex and retry
+							rf.mu.Unlock()
+						}
 					}
 				}
+
 			}()
 		}
 		// sleep for a while. Limit 10 heartbeats per second
