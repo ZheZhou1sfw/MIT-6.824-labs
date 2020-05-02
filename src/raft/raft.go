@@ -20,6 +20,7 @@ package raft
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -307,8 +308,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	rf.mu.Unlock()
-	// 2B deal with log entries
-	if len(args.LogEntires) > 0 {
+	// 2B deal with real log entries
+	if args.LogEntires != nil && len(args.LogEntires) > 0 {
 
 	}
 }
@@ -467,16 +468,15 @@ func (rf *Raft) enhancedHeartBeats() {
 			// this goroutine send RPC, process RPC and establish leadership having majority votes
 			go func() {
 
-				isSuccess := false
-				nextIndex := rf.nextIndex[targetID]
 				rf.mu.Lock()
+				isSuccess := false
+				rf.mu.Unlock()
 				// if the response is not successful, then there are two possible causes:
 				// 1. This leader is outdated and it should step down immediately (break out of the loop)
 				// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
 				for !isSuccess {
 					// create args structure
 					rf.mu.Lock()
-
 					// last log index
 					lastRfLogIndex := len(rf.log)
 
@@ -488,7 +488,7 @@ func (rf *Raft) enhancedHeartBeats() {
 
 					// log entries to apply
 					logs := []*LogStruct{}
-
+					nextIndex := rf.nextIndex[targetID]
 					if lastRfLogIndex >= nextIndex {
 						logs = rf.log[nextIndex:]
 					}
@@ -511,26 +511,59 @@ func (rf *Raft) enhancedHeartBeats() {
 					// send RPC call
 					rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
 					isSuccess = reply.Success
-
 					rf.mu.Lock()
 					if !rpcSuccess {
 						//fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 						rf.mu.Unlock()
 					} else {
-						// if the follower has a higher term than the leader, the leader should convert to follower
-						if reply.Term > rf.currentTerm {
+						if isSuccess { // If successful: update nextIndex and matchIndex for follower
+							// since success from follower means all logs have been up to date,
+							// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
+							rf.matchIndex[targetID] = len(rf.log)
+							rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
+							rf.mu.Unlock()
+						} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 							rf.updateState("follower", reply.Term)
 							rf.mu.Unlock()
 							go func() { rf.checkTimeouts() }()
+							// escape the check loop
 							break
 						} else { // because of log inconsistency, decrement nextIndex and retry
+							rf.nextIndex[targetID]--
 							rf.mu.Unlock()
 						}
 					}
 				}
-
 			}()
 		}
+		// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
+		// then this log is actually commited and we need to forward our commitIndex to that point
+		rf.mu.Lock()
+		// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
+		m := make(map[int]int)
+		for _, matchIndex := range rf.matchIndex {
+			m[matchIndex]++ // default is 0
+		}
+		keys := []int{}
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+		sum := 0
+		for _, N := range keys {
+			if N <= rf.commitIndex {
+				break
+			}
+			sum += m[N]
+			// if  a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm, set commitIndex = N
+			if sum > len(rf.peers)/2 && rf.log[N].Term == rf.currentTerm {
+				rf.commitIndex = N
+				break // break loop
+			}
+		}
+
+		rf.mu.Unlock()
+
 		// sleep for a while. Limit 10 heartbeats per second
 		time.Sleep(time.Millisecond * 120)
 		rf.mu.Lock()
