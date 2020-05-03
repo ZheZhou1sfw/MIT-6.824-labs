@@ -29,6 +29,14 @@ import (
 	"../labrpc"
 )
 
+// helper min function for comparing integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // import "bytes"
 // import "../labgob"
 
@@ -106,6 +114,36 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Unlock()
 
 	return term, isleader
+}
+
+// Helper function that prints out the log of the server
+func (rf *Raft) printLog() {
+	var f string
+	if rf.isLeader {
+		f = "true"
+	} else {
+		f = "false"
+	}
+	fmt.Printf("The log entries of the %v-th server which is a leader? %v \n", rf.me, f)
+	for i, l := range rf.log {
+		fmt.Print(" ", i, ": ")
+		fmt.Print(l)
+	}
+	fmt.Println("")
+}
+
+// Helper function that insert a LogStruct to the given index of the lock
+// Will only insert if the index exists or could be added.
+// E.g. [1,2] insert at index 3 is okay, [1,2] insert at index 4 is bad!
+// Index is the raft index, which is 1-indexed.
+func (rf *Raft) insertLog(index int, command interface{}) {
+	if len(rf.log) < index-1 {
+		fmt.Println("Something very wrong in insertLog!!")
+	} else if len(rf.log) == index-1 {
+		rf.log = append(rf.log, &LogStruct{rf.currentTerm, command})
+	} else {
+		rf.log[index] = &LogStruct{rf.currentTerm, command}
+	}
 }
 
 // Update state to either follower or leader. This doesn't necessarily involve
@@ -188,14 +226,15 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 	for {
 		rf.applyCond.L.Lock()
 		rf.applyCond.Wait()
-
 		// ready to apply command
 		rf.mu.Lock()
 		if rf.commitIndex > rf.lastApplied {
-			// first index is 1, so we always get (index - 1)th log
+			// increment lastApplied
+			rf.lastApplied++
+			// apply log[lastApplied] to state machine
 			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1], rf.commitIndex}
 			applyCh <- newMsg
-			rf.lastApplied++
+
 		}
 		rf.mu.Unlock()
 
@@ -288,10 +327,10 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// 2A deal with heartbeats'
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
-		rf.mu.Unlock()
 		return
 	} else if args.Term > rf.currentTerm {
 		rf.updateState("follower", args.Term)
@@ -307,10 +346,45 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	rf.mu.Unlock()
+	// fmt.Println(args.LogEntires)
 	// 2B deal with real log entries
 	if args.LogEntires != nil && len(args.LogEntires) > 0 {
+		// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
+		if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+			reply.Success = false
+		} else {
+			// If an existing entry conflicts with a new one (same index but
+			// different terms), delete the existing entry and all that follow it
+			i := 1
 
+			for ; i <= len(args.LogEntires); i++ {
+				toInsertIndex := args.PrevLogIndex + i
+				if len(rf.log) < toInsertIndex {
+					break
+				}
+				if rf.log[toInsertIndex-1].Term != args.LogEntires[i-1].Term {
+					for j := i; j <= len(args.LogEntires); j++ {
+						if len(rf.log) < args.PrevLogIndex+j {
+							break
+						}
+						rf.log[args.PrevLogIndex+j-1] = nil // delete
+					}
+					break
+				}
+			}
+			// Append any new entries not already in the log {
+			for ; i <= len(args.LogEntires); i++ {
+				toInsertIndex := args.PrevLogIndex + i
+				// fmt.Println("!!!!!!!! ", toInsertIndex)
+				// rf.log[toInsertIndex-1] = args.LogEntires[i-1]
+				rf.insertLog(toInsertIndex, args.LogEntires[i-1].Command)
+			}
+			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+			if args.LeaderCommit > rf.commitIndex {
+				rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+i-1)
+			}
+		}
+		rf.printLog()
 	}
 }
 
@@ -374,9 +448,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-
 	// Your code here (2B).
-
+	fmt.Println(command)
 	rf.mu.Lock()
 	// if not leader, return false immediately
 	if !rf.isLeader {
@@ -391,11 +464,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// apply to leader's local log, should be the next index of the current commitIndex.
 	// If that location is occupied, definitely sends a warning
 	targetCommitIndex := rf.commitIndex + 1
-	if rf.log[targetCommitIndex] != nil {
-		fmt.Println("Leader's local log already occupied. Some elements get overwritten!!")
-	}
-	rf.log[targetCommitIndex] = &LogStruct{rf.currentTerm, command}
+	// if rf.log[targetCommitIndex] != nil {
+	// 	fmt.Println("Leader's local log already occupied. Some elements get overwritten!!")
+	// }
 
+	// rf.log[targetCommitIndex] = &LogStruct{rf.currentTerm, command}
+
+	rf.insertLog(targetCommitIndex, command)
 	// if commited, then the index should be the next index of the current commitIndex
 	index = targetCommitIndex
 	term = rf.currentTerm
@@ -410,7 +485,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		currentApplied = rf.lastApplied
 		rf.mu.Unlock()
 	}
+	fmt.Println("Yes yes yes yes")
+	fmt.Println(index, term, isLeader)
+	// rf.printLog()
 
+	fmt.Println(rf.lastApplied, rf.nextIndex, rf.matchIndex)
 	return index, term, isLeader
 }
 
@@ -487,16 +566,17 @@ func (rf *Raft) enhancedHeartBeats() {
 					}
 
 					// log entries to apply
+					// rf.printLog()
 					logs := []*LogStruct{}
 					nextIndex := rf.nextIndex[targetID]
 					if lastRfLogIndex >= nextIndex {
-						logs = rf.log[nextIndex:]
+						logs = rf.log[nextIndex-1:]
 					}
-
+					// fmt.Println(logs)
 					args := AppendEntriesArgs{
 						rf.currentTerm,
 						rf.me,
-						lastRfLogIndex, // prevLogIndex
+						lastRfLogIndex - 1, // prevLogIndex
 						prevLogTerm,
 						logs,
 						rf.commitIndex,
@@ -513,7 +593,7 @@ func (rf *Raft) enhancedHeartBeats() {
 					isSuccess = reply.Success
 					rf.mu.Lock()
 					if !rpcSuccess {
-						//fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+						// fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 						rf.mu.Unlock()
 					} else {
 						if isSuccess { // If successful: update nextIndex and matchIndex for follower
@@ -521,6 +601,7 @@ func (rf *Raft) enhancedHeartBeats() {
 							// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
 							rf.matchIndex[targetID] = len(rf.log)
 							rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
+
 							rf.mu.Unlock()
 						} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 							rf.updateState("follower", reply.Term)
@@ -555,9 +636,11 @@ func (rf *Raft) enhancedHeartBeats() {
 				break
 			}
 			sum += m[N]
-			// if  a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm, set commitIndex = N
-			if sum > len(rf.peers)/2 && rf.log[N].Term == rf.currentTerm {
+			// if exist a majority of matchIndex[i] ≥ N,
+			// and log[N].term == currentTerm, set commitIndex = N
+			if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
 				rf.commitIndex = N
+				rf.applyCond.Signal()
 				break // break loop
 			}
 		}
