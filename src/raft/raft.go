@@ -124,7 +124,7 @@ func (rf *Raft) printLog() {
 	} else {
 		f = "false"
 	}
-	fmt.Printf("The log entries of the %v-th server which is a leader? %v \n", rf.me, f)
+	fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied)
 	for i, l := range rf.log {
 		fmt.Print(" ", i, ": ")
 		fmt.Print(l)
@@ -169,8 +169,6 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 		rf.isLeader = true
 		fmt.Printf("new leader is ID %v with term %v \n", rf.me, rf.currentTerm)
 		// initialize nextIndex[] and matchIndex[]
-		rf.nextIndex = make([]int, len(rf.peers))
-		rf.matchIndex = make([]int, len(rf.peers))
 		for i := 0; i < len(rf.peers); i++ {
 			rf.nextIndex[i] = len(rf.log) + 1
 			rf.matchIndex[i] = 0
@@ -232,9 +230,9 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 			// increment lastApplied
 			rf.lastApplied++
 			// apply log[lastApplied] to state machine
-			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1], rf.commitIndex}
+			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.commitIndex}
 			applyCh <- newMsg
-
+			// fmt.Println("&&&&&& ", rf.me, " is commiting", rf.log[rf.lastApplied-1].Command)
 		}
 		rf.mu.Unlock()
 
@@ -330,6 +328,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
+		// fmt.Println("@@@@@@@@@@@@@@", args.Term, rf.currentTerm)
 		reply.Success = false
 		return
 	} else if args.Term > rf.currentTerm {
@@ -346,11 +345,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
+
 	// fmt.Println(args.LogEntires)
 	// 2B deal with real log entries
 	if args.LogEntires != nil && len(args.LogEntires) > 0 {
 		// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-		if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+		fmt.Println("$$$$$$$$$$$")
+		fmt.Println(args.PrevLogIndex, rf.log)
+		if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
 			reply.Success = false
 		} else {
 			// If an existing entry conflicts with a new one (same index but
@@ -379,13 +381,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// rf.log[toInsertIndex-1] = args.LogEntires[i-1]
 				rf.insertLog(toInsertIndex, args.LogEntires[i-1].Command)
 			}
-			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-			if args.LeaderCommit > rf.commitIndex {
-				rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+i-1)
-			}
 		}
-		rf.printLog()
+
 	}
+	// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+		// follower signal commit
+		if rf.commitIndex > rf.lastApplied {
+			rf.applyCond.Signal()
+		}
+	}
+
+	// fmt.Println("leader commit is ", args.LeaderCommit, " commitIndex is ", rf.commitIndex)
+	rf.printLog()
+
 }
 
 //
@@ -449,7 +459,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 	// Your code here (2B).
-	fmt.Println(command)
+	// fmt.Println(command)
 	rf.mu.Lock()
 	// if not leader, return false immediately
 	if !rf.isLeader {
@@ -471,6 +481,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// rf.log[targetCommitIndex] = &LogStruct{rf.currentTerm, command}
 
 	rf.insertLog(targetCommitIndex, command)
+
+	// update matchIndex and nextIndex for leader
+	rf.matchIndex[rf.me]++
+	rf.nextIndex[rf.me]++
+
 	// if commited, then the index should be the next index of the current commitIndex
 	index = targetCommitIndex
 	term = rf.currentTerm
@@ -485,11 +500,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		currentApplied = rf.lastApplied
 		rf.mu.Unlock()
 	}
-	fmt.Println("Yes yes yes yes")
-	fmt.Println(index, term, isLeader)
-	// rf.printLog()
+	// fmt.Println("Yes yes yes yes")
+	// fmt.Println(index, term, isLeader)
+	rf.printLog()
 
-	fmt.Println(rf.lastApplied, rf.nextIndex, rf.matchIndex)
+	// fmt.Println(rf.lastApplied, rf.nextIndex, rf.matchIndex)
 	return index, term, isLeader
 }
 
@@ -534,9 +549,13 @@ func (rf *Raft) checkTimeouts() {
 func (rf *Raft) enhancedHeartBeats() {
 	// only the leader is required to do this
 	rf.mu.Lock()
+
 	stillLeader := rf.isLeader
 	rf.mu.Unlock()
 	for stillLeader {
+		// debug message
+		// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
+
 		// send heartbeat to followers
 		for i := range rf.peers {
 			// skip leader itself
@@ -569,10 +588,15 @@ func (rf *Raft) enhancedHeartBeats() {
 					// rf.printLog()
 					logs := []*LogStruct{}
 					nextIndex := rf.nextIndex[targetID]
+					// fmt.Println(rf.log, nextIndex)
 					if lastRfLogIndex >= nextIndex {
 						logs = rf.log[nextIndex-1:]
 					}
 					// fmt.Println(logs)
+
+					// save term
+					recordTerm := rf.currentTerm
+
 					args := AppendEntriesArgs{
 						rf.currentTerm,
 						rf.me,
@@ -592,6 +616,13 @@ func (rf *Raft) enhancedHeartBeats() {
 					rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
 					isSuccess = reply.Success
 					rf.mu.Lock()
+					// leader out dated
+					if recordTerm != rf.currentTerm {
+						fmt.Println("Leader ", rf.me, " is outdated during sending enhancedHeart beats to server ", targetID)
+						rf.mu.Unlock()
+						break
+					}
+
 					if !rpcSuccess {
 						// fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 						rf.mu.Unlock()
@@ -604,12 +635,14 @@ func (rf *Raft) enhancedHeartBeats() {
 
 							rf.mu.Unlock()
 						} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
+							// rf.currentTerm = reply.Term
 							rf.updateState("follower", reply.Term)
 							rf.mu.Unlock()
 							go func() { rf.checkTimeouts() }()
 							// escape the check loop
 							break
 						} else { // because of log inconsistency, decrement nextIndex and retry
+							// fmt.Println("%%%%%%%%%% ", reply.Term, rf.currentTerm)
 							rf.nextIndex[targetID]--
 							rf.mu.Unlock()
 						}
@@ -710,7 +743,7 @@ func (rf *Raft) startElection() {
 			rpcSuccess := rf.sendRequestVote(targetID, &voteArgs, &voteReply)
 			rf.mu.Lock()
 			if !rpcSuccess {
-				fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+				// fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 			} else {
 				// successful rpc, process result here
 
@@ -808,8 +841,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// leader for states
 
 	rf.isLeader = false
-	rf.nextIndex = []int{}
-	rf.matchIndex = []int{}
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	// initialize Cond variable
 	m := sync.Mutex{}
