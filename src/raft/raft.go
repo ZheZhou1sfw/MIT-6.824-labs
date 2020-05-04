@@ -163,7 +163,8 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 		rf.votedFor = -1
 		if rf.isLeader {
 			rf.isLeader = false
-			go rf.checkTimeouts()
+			// go rf.checkTimeouts()
+			go func() { rf.checkTimeouts() }()
 		}
 	} else if key == "leader" {
 		rf.isLeader = true
@@ -289,6 +290,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				lastLogTerm = rf.log[len(rf.log)-1].Term
 			}
 			lastLogIndex := len(rf.log)
+			// if candidate’s log is at least as up-to-date as receiver’s log, grant vote
 			if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
@@ -351,7 +353,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LogEntires != nil && len(args.LogEntires) > 0 {
 		// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 		fmt.Println("$$$$$$$$$$$")
-		fmt.Println(args.PrevLogIndex, rf.log)
+		fmt.Println(rf.me, args.PrevLogIndex, rf.log)
 		if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
 			reply.Success = false
 		} else {
@@ -394,7 +396,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// fmt.Println("leader commit is ", args.LeaderCommit, " commitIndex is ", rf.commitIndex)
-	rf.printLog()
+	// rf.printLog()
 
 }
 
@@ -502,9 +504,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	// fmt.Println("Yes yes yes yes")
 	// fmt.Println(index, term, isLeader)
-	rf.printLog()
+	// rf.printLog()
+	rf.mu.Lock()
+	fmt.Println(">>>>>>>>>>>>>>")
+	fmt.Println(rf.me, rf.lastApplied, rf.nextIndex, rf.matchIndex)
+	rf.mu.Unlock() // debug only
 
-	// fmt.Println(rf.lastApplied, rf.nextIndex, rf.matchIndex)
 	return index, term, isLeader
 }
 
@@ -518,7 +523,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) checkTimeouts() {
 	for {
 		rf.mu.Lock()
-		// fmt.Println(rf.me, " is checking timeout")
+		// fmt.Println(rf.me, " is checking timeout", "I am a leader?", rf.isLeader)
 		// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
 		durationPassed := time.Now().Sub(rf.lastHeardFromLeader)
 		// leader doesn't need checkTimeouts
@@ -527,6 +532,12 @@ func (rf *Raft) checkTimeouts() {
 			return
 		} else if durationPassed > rf.timeLimit { // overdue, should start an election
 			// have a separate goroutine deal with election because checkTimeouts need to keep monitoring
+
+			// debug
+			if rf.isLeader {
+				fmt.Println("********************")
+			}
+
 			go func() { rf.startElection() }()
 			// reset election timer
 			rf.resetTimer()
@@ -555,16 +566,19 @@ func (rf *Raft) enhancedHeartBeats() {
 	for stillLeader {
 		// debug message
 		// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
-
+		wg := sync.WaitGroup{}
 		// send heartbeat to followers
 		for i := range rf.peers {
 			// skip leader itself
 			if i == rf.me {
 				continue
 			}
+
+			wg.Add(1)
+
 			targetID := i // save index
 			// this goroutine send RPC, process RPC and establish leadership having majority votes
-			go func() {
+			go func(wgg *sync.WaitGroup, rf *Raft) {
 
 				rf.mu.Lock()
 				isSuccess := false
@@ -618,7 +632,7 @@ func (rf *Raft) enhancedHeartBeats() {
 					rf.mu.Lock()
 					// leader out dated
 					if recordTerm != rf.currentTerm {
-						fmt.Println("Leader ", rf.me, " is outdated during sending enhancedHeart beats to server ", targetID)
+						fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
 						rf.mu.Unlock()
 						break
 					}
@@ -636,9 +650,10 @@ func (rf *Raft) enhancedHeartBeats() {
 							rf.mu.Unlock()
 						} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 							// rf.currentTerm = reply.Term
+							fmt.Println("pppppppppppppp", rf.me, targetID, rf.currentTerm, reply.Term, rf.isLeader)
 							rf.updateState("follower", reply.Term)
 							rf.mu.Unlock()
-							go func() { rf.checkTimeouts() }()
+							// go func() { rf.checkTimeouts() }()
 							// escape the check loop
 							break
 						} else { // because of log inconsistency, decrement nextIndex and retry
@@ -648,8 +663,11 @@ func (rf *Raft) enhancedHeartBeats() {
 						}
 					}
 				}
-			}()
+				wgg.Done()
+			}(&wg, rf)
 		}
+		// wg.Wait()
+
 		// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
 		// then this log is actually commited and we need to forward our commitIndex to that point
 		rf.mu.Lock()
@@ -677,7 +695,10 @@ func (rf *Raft) enhancedHeartBeats() {
 				break // break loop
 			}
 		}
-
+		stillLeader = rf.isLeader
+		if !stillLeader {
+			break
+		}
 		rf.mu.Unlock()
 
 		// sleep for a while. Limit 10 heartbeats per second
@@ -699,7 +720,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	// Increment current Term
 	rf.currentTerm++
-	fmt.Println(rf.me, " is starting the election on term ", rf.currentTerm)
+	fmt.Println(rf.me, rf.isLeader, " is starting the election on term ", rf.currentTerm)
 	// vote for yourself
 	rf.votedFor = rf.me
 	// // clear voted for
