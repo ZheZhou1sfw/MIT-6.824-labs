@@ -100,6 +100,7 @@ type Raft struct {
 
 	// condition variable sync.Cond for triggering applyCommited
 	applyCond *sync.Cond
+	applyMu   sync.Mutex
 }
 
 // return currentTerm and whether this server believes it is the leader.
@@ -142,7 +143,8 @@ func (rf *Raft) insertLog(index int, command interface{}) {
 	} else if len(rf.log) == index-1 {
 		rf.log = append(rf.log, &LogStruct{rf.currentTerm, command})
 	} else {
-		rf.log[index] = &LogStruct{rf.currentTerm, command}
+		fmt.Println("????", rf.log, index)
+		rf.log[index-1] = &LogStruct{rf.currentTerm, command}
 	}
 }
 
@@ -164,7 +166,7 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 		if rf.isLeader {
 			rf.isLeader = false
 			// go rf.checkTimeouts()
-			go func() { rf.checkTimeouts() }()
+			// go func() { rf.checkTimeouts() }()
 		}
 	} else if key == "leader" {
 		rf.isLeader = true
@@ -227,11 +229,13 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 		rf.applyCond.Wait()
 		// ready to apply command
 		rf.mu.Lock()
-		if rf.commitIndex > rf.lastApplied {
+		for rf.commitIndex > rf.lastApplied {
 			// increment lastApplied
 			rf.lastApplied++
+			fmt.Println(rf.me, "is applying message index", rf.lastApplied)
 			// apply log[lastApplied] to state machine
-			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.commitIndex}
+			// newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.commitIndex}
+			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied}
 			applyCh <- newMsg
 			// fmt.Println("&&&&&& ", rf.me, " is commiting", rf.log[rf.lastApplied-1].Command)
 		}
@@ -347,55 +351,64 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.resetTimer()
 	}
 
-	reply.Term = rf.currentTerm
-	reply.Success = true
+	// reply.Term = rf.currentTerm
+	// reply.Success = true
 
 	// fmt.Println(args.LogEntires)
 	// 2B deal with real log entries
-	if args.LogEntires != nil && len(args.LogEntires) > 0 {
-		// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-		fmt.Println("$$$$$$$$$$$")
-		fmt.Println(rf.me, args.PrevLogIndex, rf.log)
-		if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
-			reply.Success = false
-		} else {
-			// If an existing entry conflicts with a new one (same index but
-			// different terms), delete the existing entry and all that follow it
-			i := 1
+	// if args.LogEntires != nil && len(args.LogEntires) > 0 {
+	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
+	// fmt.Println("$$$$$$$$$$$")
+	// fmt.Println(rf.me, args.PrevLogIndex, rf.log)
+	if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
+		// fmt.Println("**********", rf.me, rf.log, args.PrevLogIndex, args.PrevLogTerm)
+		reply.Success = false
+	} else {
+		reply.Success = true
+		// If an existing entry conflicts with a new one (same index but
+		// different terms), delete the existing entry and all that follow it
+		i := 1
 
-			for ; i <= len(args.LogEntires); i++ {
-				toInsertIndex := args.PrevLogIndex + i
-				if len(rf.log) < toInsertIndex {
-					break
-				}
-				if rf.log[toInsertIndex-1].Term != args.LogEntires[i-1].Term {
-					for j := i; j <= len(args.LogEntires); j++ {
-						if len(rf.log) < args.PrevLogIndex+j {
-							break
-						}
-						rf.log[args.PrevLogIndex+j-1] = nil // delete
-					}
-					break
-				}
+		for ; i <= len(args.LogEntires); i++ {
+			toInsertIndex := args.PrevLogIndex + i
+			if len(rf.log) < toInsertIndex {
+				break
 			}
-			// Append any new entries not already in the log {
-			for ; i <= len(args.LogEntires); i++ {
-				toInsertIndex := args.PrevLogIndex + i
-				// fmt.Println("!!!!!!!! ", toInsertIndex)
-				// rf.log[toInsertIndex-1] = args.LogEntires[i-1]
-				rf.insertLog(toInsertIndex, args.LogEntires[i-1].Command)
+			if rf.log[toInsertIndex-1].Term != args.LogEntires[i-1].Term {
+				for j := i; j <= len(args.LogEntires); j++ {
+					if len(rf.log) < args.PrevLogIndex+j {
+						break
+					}
+					rf.log[args.PrevLogIndex+j-1] = nil // delete
+				}
+				break
 			}
 		}
-
+		// Append any new entries not already in the log {
+		for ; i <= len(args.LogEntires); i++ {
+			toInsertIndex := args.PrevLogIndex + i
+			// fmt.Println("!!!!!!!! ", toInsertIndex)
+			// rf.log[toInsertIndex-1] = args.LogEntires[i-1]
+			rf.insertLog(toInsertIndex, args.LogEntires[i-1].Command)
+		}
 	}
+
+	// }
 	// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		oldCommitIndex := rf.commitIndex
+		// oldCommitIndex := rf.commitIndex
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
 		// follower signal commit
-		for rf.commitIndex > rf.lastApplied && oldCommitIndex < rf.commitIndex {
+		// for rf.commitIndex > rf.lastApplied && oldCommitIndex < rf.commitIndex {
+		// 	// fmt.Println("!!!!!!!!!", rf.me, rf.isLeader, rf.commitIndex, rf.lastApplied, oldCommitIndex)
+		// 	// rf.mu.Unlock()
+		// 	rf.applyCond.Signal()
+		// 	// time.Sleep(time.Millisecond)
+		// 	// rf.mu.Lock()
+		// 	oldCommitIndex++
+		// }
+		if rf.commitIndex > rf.lastApplied {
 			rf.applyCond.Signal()
-			oldCommitIndex++
 		}
 	}
 
@@ -499,7 +512,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// return when this is applied to local machine! Wrong! Should return immediately
 	// currentApplied := rf.lastApplied
 	rf.mu.Unlock()
-	rf.broadcastEntries(false)
+	go func() { rf.broadcastEntries(false) }()
 	// for currentApplied < targetCommitIndex {
 	// 	time.Sleep(time.Millisecond * 20)
 	// 	rf.mu.Lock()	// 	rf.mu.Lock()	// 	rf.mu.Lock()	// 	rf.mu.Lock()
@@ -627,6 +640,9 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				// rf.printLog()
 				logs := []*LogStruct{}
 				// when heartbeats, send empty logs, else send full logs
+				if !isHeartBeat {
+					// fmt.Println("!!!!!!!!!!", rf.log, nextIndex, rf.nextIndex, rf.isLeader, rf.me)
+				}
 				if !isHeartBeat && len(rf.log) > 0 {
 					logs = rf.log[nextIndex-1:]
 				}
@@ -653,9 +669,9 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				// send RPC call
 				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
 				// heartbeat simply returns
-				if isHeartBeat {
-					break
-				}
+				// if isHeartBeat {
+				// 	break
+				// }
 
 				// Below is broadcasting real log entries:
 				//
@@ -669,13 +685,15 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				}
 
 				if !rpcSuccess {
-					fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+					// fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 					rf.mu.Unlock()
 				} else {
 					if isSuccess { // If successful: update nextIndex and matchIndex for follower
 						// since success from follower means all logs have been up to date,
 						// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
-						rf.matchIndex[targetID] = len(rf.log)
+						// rf.matchIndex[targetID] = len(rf.log)
+
+						rf.matchIndex[targetID] = prevLogIndex + len(logs)
 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
 
 						rf.mu.Unlock()
@@ -693,176 +711,41 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						rf.mu.Unlock()
 					}
 				}
+				// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
+				// then this log is actually commited and we need to forward our commitIndex to that point
+				rf.mu.Lock()
+				// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
+				m := make(map[int]int)
+				for _, matchIndex := range rf.matchIndex {
+					m[matchIndex]++ // default is 0
+				}
+				keys := []int{}
+				for k := range m {
+					keys = append(keys, k)
+				}
+				sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+				sum := 0
+				for _, N := range keys {
+					if N <= rf.commitIndex {
+						break
+					}
+					sum += m[N]
+					// if exist a majority of matchIndex[i] ≥ N,
+					// and log[N].term == currentTerm, set commitIndex = N
+					if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
+						rf.commitIndex = N
+						rf.applyCond.Signal()
+						break // break loop
+					}
+				}
+				rf.mu.Unlock()
 			}
 			wgg.Done()
 		}(&wg, rf)
 	}
 	wg.Wait()
 
-	// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
-	// then this log is actually commited and we need to forward our commitIndex to that point
-	rf.mu.Lock()
-	// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
-	m := make(map[int]int)
-	for _, matchIndex := range rf.matchIndex {
-		m[matchIndex]++ // default is 0
-	}
-	keys := []int{}
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
-	sum := 0
-	for _, N := range keys {
-		if N <= rf.commitIndex {
-			break
-		}
-		sum += m[N]
-		// if exist a majority of matchIndex[i] ≥ N,
-		// and log[N].term == currentTerm, set commitIndex = N
-		if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
-			rf.commitIndex = N
-			rf.applyCond.Signal()
-			break // break loop
-		}
-	}
-	rf.mu.Unlock()
 }
-
-// func (rf *Raft) broadcastEntries() {
-// 	// debug message
-// 	// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
-// 	wg := sync.WaitGroup{}
-// 	// send heartbeat to followers
-// 	for i := range rf.peers {
-// 		// skip leader itself
-// 		if i == rf.me {
-// 			continue
-// 		}
-
-// 		wg.Add(1)
-
-// 		targetID := i // save index
-// 		// this goroutine send RPC, process RPC and establish leadership having majority votes
-// 		go func(wgg *sync.WaitGroup, rf *Raft) {
-
-// 			rf.mu.Lock()
-// 			isSuccess := false
-// 			rf.mu.Unlock()
-// 			// if the response is not successful, then there are two possible causes:
-// 			// 1. This leader is outdated and it should step down immediately (break out of the loop)
-// 			// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
-// 			for !isSuccess {
-// 				// create args structure
-// 				rf.mu.Lock()
-// 				// last log index
-// 				lastRfLogIndex := len(rf.log)
-
-// 				// last log term
-// 				prevLogTerm := -1
-// 				if len(rf.log) > 0 {
-// 					prevLogTerm = rf.log[len(rf.log)-1].Term
-// 				}
-
-// 				// log entries to apply
-// 				// rf.printLog()
-// 				logs := []*LogStruct{}
-// 				nextIndex := rf.nextIndex[targetID]
-// 				// fmt.Println(rf.log, nextIndex)
-// 				if lastRfLogIndex >= nextIndex {
-// 					logs = rf.log[nextIndex-1:]
-// 				}
-// 				// fmt.Println(logs)
-
-// 				// save term
-// 				recordTerm := rf.currentTerm
-
-// 				args := AppendEntriesArgs{
-// 					rf.currentTerm,
-// 					rf.me,
-// 					lastRfLogIndex - 1, // prevLogIndex
-// 					prevLogTerm,
-// 					logs,
-// 					rf.commitIndex,
-// 				}
-
-// 				rf.mu.Unlock()
-
-// 				reply := AppendEntriesReply{
-// 					-1,
-// 					false,
-// 				}
-// 				// send RPC call
-// 				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
-// 				isSuccess = reply.Success
-// 				rf.mu.Lock()
-// 				// leader out dated
-// 				if recordTerm != rf.currentTerm {
-// 					fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
-// 					rf.mu.Unlock()
-// 					break
-// 				}
-
-// 				if !rpcSuccess {
-// 					// fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
-// 					rf.mu.Unlock()
-// 				} else {
-// 					if isSuccess { // If successful: update nextIndex and matchIndex for follower
-// 						// since success from follower means all logs have been up to date,
-// 						// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
-// 						rf.matchIndex[targetID] = len(rf.log)
-// 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
-
-// 						rf.mu.Unlock()
-// 					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
-// 						// rf.currentTerm = reply.Term
-// 						fmt.Println("pppppppppppppp", rf.me, targetID, rf.currentTerm, reply.Term, rf.isLeader)
-// 						rf.updateState("follower", reply.Term)
-// 						rf.mu.Unlock()
-// 						// go func() { rf.checkTimeouts() }()
-// 						// escape the check loop
-// 						break
-// 					} else { // because of log inconsistency, decrement nextIndex and retry
-// 						// fmt.Println("%%%%%%%%%% ", reply.Term, rf.currentTerm)
-// 						rf.nextIndex[targetID]--
-// 						rf.mu.Unlock()
-// 					}
-// 				}
-// 			}
-// 			wgg.Done()
-// 		}(&wg, rf)
-// 	}
-// 	wg.Wait()
-
-// 	// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
-// 	// then this log is actually commited and we need to forward our commitIndex to that point
-// 	rf.mu.Lock()
-// 	// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
-// 	m := make(map[int]int)
-// 	for _, matchIndex := range rf.matchIndex {
-// 		m[matchIndex]++ // default is 0
-// 	}
-// 	keys := []int{}
-// 	for k := range m {
-// 		keys = append(keys, k)
-// 	}
-// 	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
-// 	sum := 0
-// 	for _, N := range keys {
-// 		if N <= rf.commitIndex {
-// 			break
-// 		}
-// 		sum += m[N]
-// 		// if exist a majority of matchIndex[i] ≥ N,
-// 		// and log[N].term == currentTerm, set commitIndex = N
-// 		if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
-// 			rf.commitIndex = N
-// 			rf.applyCond.Signal()
-// 			break // break loop
-// 		}
-// 	}
-// 	rf.mu.Unlock()
-// }
 
 func (rf *Raft) startElection() {
 	// always vote for itself
@@ -919,7 +802,7 @@ func (rf *Raft) startElection() {
 			rpcSuccess := rf.sendRequestVote(targetID, &voteArgs, &voteReply)
 			rf.mu.Lock()
 			if !rpcSuccess {
-				fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+				// fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 			} else {
 				// successful rpc, process result here
 
