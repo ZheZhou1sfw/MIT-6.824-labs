@@ -118,18 +118,18 @@ func (rf *Raft) GetState() (int, bool) {
 
 // Helper function that prints out the log of the server
 func (rf *Raft) printLog() {
-	var f string
-	if rf.isLeader {
-		f = "true"
-	} else {
-		f = "false"
-	}
-	fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied)
-	for i, l := range rf.log {
-		fmt.Print(" ", i, ": ")
-		fmt.Print(l)
-	}
-	fmt.Println("")
+	// var f string
+	// if rf.isLeader {
+	// 	f = "true"
+	// } else {
+	// 	f = "false"
+	// }
+	// fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied)
+	// for i, l := range rf.log {
+	// 	fmt.Print(" ", i, ": ")
+	// 	fmt.Print(l)
+	// }
+	// fmt.Println("")
 }
 
 // Helper function that insert a LogStruct to the given index of the lock
@@ -175,7 +175,7 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 			rf.matchIndex[i] = 0
 		}
 		// start enhancedHeartBeats()
-		go func() { rf.enhancedHeartBeats() }()
+		go func() { rf.heartBeats() }()
 	}
 }
 
@@ -290,8 +290,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				lastLogTerm = rf.log[len(rf.log)-1].Term
 			}
 			lastLogIndex := len(rf.log)
+			fmt.Println(rf.me, "is receiving")
 			// if candidate’s log is at least as up-to-date as receiver’s log, grant vote
 			if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
+				fmt.Println(rf.me, "is voting")
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
 				// reset timer
@@ -388,15 +390,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
+		oldCommitIndex := rf.commitIndex
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
 		// follower signal commit
-		if rf.commitIndex > rf.lastApplied {
+		for rf.commitIndex > rf.lastApplied && oldCommitIndex < rf.commitIndex {
 			rf.applyCond.Signal()
+			oldCommitIndex++
 		}
 	}
 
 	// fmt.Println("leader commit is ", args.LeaderCommit, " commitIndex is ", rf.commitIndex)
-	// rf.printLog()
+	rf.printLog()
 
 }
 
@@ -492,23 +496,24 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = targetCommitIndex
 	term = rf.currentTerm
 
-	// return when this is applied to local machine
-	currentApplied := rf.lastApplied
+	// return when this is applied to local machine! Wrong! Should return immediately
+	// currentApplied := rf.lastApplied
 	rf.mu.Unlock()
+	rf.broadcastEntries(false)
+	// for currentApplied < targetCommitIndex {
+	// 	time.Sleep(time.Millisecond * 20)
+	// 	rf.mu.Lock()	// 	rf.mu.Lock()	// 	rf.mu.Lock()	// 	rf.mu.Lock()
 
-	for currentApplied < targetCommitIndex {
-		time.Sleep(time.Millisecond * 20)
-		rf.mu.Lock()
-		currentApplied = rf.lastApplied
-		rf.mu.Unlock()
-	}
+	// 	currentApplied = rf.lastApplied
+	// 	rf.mu.Unlock()
+	// }
 	// fmt.Println("Yes yes yes yes")
 	// fmt.Println(index, term, isLeader)
 	// rf.printLog()
-	rf.mu.Lock()
-	fmt.Println(">>>>>>>>>>>>>>")
-	fmt.Println(rf.me, rf.lastApplied, rf.nextIndex, rf.matchIndex)
-	rf.mu.Unlock() // debug only
+	// rf.mu.Lock()
+	// fmt.Println(">>>>>>>>>>>>>>")
+	// fmt.Println(rf.me, rf.lastApplied, rf.nextIndex, rf.matchIndex)
+	// rf.mu.Unlock() // debug only
 
 	return index, term, isLeader
 }
@@ -527,15 +532,16 @@ func (rf *Raft) checkTimeouts() {
 		// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
 		durationPassed := time.Now().Sub(rf.lastHeardFromLeader)
 		// leader doesn't need checkTimeouts
-		if rf.isLeader {
-			rf.mu.Unlock()
-			return
-		} else if durationPassed > rf.timeLimit { // overdue, should start an election
+		// if rf.isLeader {
+		// 	rf.mu.Unlock()
+		// 	return
+		// } else if durationPassed > rf.timeLimit { // overdue, should start an election
+		if !rf.isLeader && durationPassed > rf.timeLimit { // overdue, should start an election
 			// have a separate goroutine deal with election because checkTimeouts need to keep monitoring
 
 			// debug
 			if rf.isLeader {
-				fmt.Println("********************")
+				// fmt.Println("********************")
 			}
 
 			go func() { rf.startElection() }()
@@ -557,150 +563,18 @@ func (rf *Raft) checkTimeouts() {
 // This function will send heart beats when no updates are needed.
 // When last log index ≥ nextIndex for a follower, then there needs an update for this follower.
 //
-func (rf *Raft) enhancedHeartBeats() {
+func (rf *Raft) heartBeats() {
 	// only the leader is required to do this
 	rf.mu.Lock()
-
 	stillLeader := rf.isLeader
 	rf.mu.Unlock()
+
 	for stillLeader {
-		// debug message
-		// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
-		wg := sync.WaitGroup{}
-		// send heartbeat to followers
-		for i := range rf.peers {
-			// skip leader itself
-			if i == rf.me {
-				continue
-			}
-
-			wg.Add(1)
-
-			targetID := i // save index
-			// this goroutine send RPC, process RPC and establish leadership having majority votes
-			go func(wgg *sync.WaitGroup, rf *Raft) {
-
-				rf.mu.Lock()
-				isSuccess := false
-				rf.mu.Unlock()
-				// if the response is not successful, then there are two possible causes:
-				// 1. This leader is outdated and it should step down immediately (break out of the loop)
-				// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
-				for !isSuccess {
-					// create args structure
-					rf.mu.Lock()
-					// last log index
-					lastRfLogIndex := len(rf.log)
-
-					// last log term
-					prevLogTerm := -1
-					if len(rf.log) > 0 {
-						prevLogTerm = rf.log[len(rf.log)-1].Term
-					}
-
-					// log entries to apply
-					// rf.printLog()
-					logs := []*LogStruct{}
-					nextIndex := rf.nextIndex[targetID]
-					// fmt.Println(rf.log, nextIndex)
-					if lastRfLogIndex >= nextIndex {
-						logs = rf.log[nextIndex-1:]
-					}
-					// fmt.Println(logs)
-
-					// save term
-					recordTerm := rf.currentTerm
-
-					args := AppendEntriesArgs{
-						rf.currentTerm,
-						rf.me,
-						lastRfLogIndex - 1, // prevLogIndex
-						prevLogTerm,
-						logs,
-						rf.commitIndex,
-					}
-
-					rf.mu.Unlock()
-
-					reply := AppendEntriesReply{
-						-1,
-						false,
-					}
-					// send RPC call
-					rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
-					isSuccess = reply.Success
-					rf.mu.Lock()
-					// leader out dated
-					if recordTerm != rf.currentTerm {
-						fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
-						rf.mu.Unlock()
-						break
-					}
-
-					if !rpcSuccess {
-						// fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
-						rf.mu.Unlock()
-					} else {
-						if isSuccess { // If successful: update nextIndex and matchIndex for follower
-							// since success from follower means all logs have been up to date,
-							// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
-							rf.matchIndex[targetID] = len(rf.log)
-							rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
-
-							rf.mu.Unlock()
-						} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
-							// rf.currentTerm = reply.Term
-							fmt.Println("pppppppppppppp", rf.me, targetID, rf.currentTerm, reply.Term, rf.isLeader)
-							rf.updateState("follower", reply.Term)
-							rf.mu.Unlock()
-							// go func() { rf.checkTimeouts() }()
-							// escape the check loop
-							break
-						} else { // because of log inconsistency, decrement nextIndex and retry
-							// fmt.Println("%%%%%%%%%% ", reply.Term, rf.currentTerm)
-							rf.nextIndex[targetID]--
-							rf.mu.Unlock()
-						}
-					}
-				}
-				wgg.Done()
-			}(&wg, rf)
-		}
-		// wg.Wait()
-
-		// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
-		// then this log is actually commited and we need to forward our commitIndex to that point
 		rf.mu.Lock()
-		// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
-		m := make(map[int]int)
-		for _, matchIndex := range rf.matchIndex {
-			m[matchIndex]++ // default is 0
-		}
-		keys := []int{}
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Sort(sort.Reverse(sort.IntSlice(keys)))
-		sum := 0
-		for _, N := range keys {
-			if N <= rf.commitIndex {
-				break
-			}
-			sum += m[N]
-			// if exist a majority of matchIndex[i] ≥ N,
-			// and log[N].term == currentTerm, set commitIndex = N
-			if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
-				rf.commitIndex = N
-				rf.applyCond.Signal()
-				break // break loop
-			}
-		}
-		stillLeader = rf.isLeader
-		if !stillLeader {
-			break
-		}
+		// fmt.Println("current leader is", rf.me, rf.isLeader, rf.currentTerm)
 		rf.mu.Unlock()
-
+		rf.printLog()
+		go func() { rf.broadcastEntries(true) }()
 		// sleep for a while. Limit 10 heartbeats per second
 		time.Sleep(time.Millisecond * 120)
 		rf.mu.Lock()
@@ -708,6 +582,287 @@ func (rf *Raft) enhancedHeartBeats() {
 		rf.mu.Unlock()
 	}
 }
+
+// This function sends append entries to clients and wait for it to be done.
+// This requires to be done by a goroutine.
+// heartbeats() and updateFollowerLogs() would all dispatch a goroutine to call this function
+func (rf *Raft) broadcastEntries(isHeartBeat bool) {
+	// debug message
+	// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
+	wg := sync.WaitGroup{}
+	// send heartbeat to followers
+	for i := range rf.peers {
+		// skip leader itself
+		if i == rf.me {
+			continue
+		}
+
+		wg.Add(1)
+
+		targetID := i // save index
+		// this goroutine send RPC, process RPC and establish leadership having majority votes
+		go func(wgg *sync.WaitGroup, rf *Raft) {
+
+			rf.mu.Lock()
+			isSuccess := false
+			rf.mu.Unlock()
+			// if the response is not successful, then there are two possible causes:
+			// 1. This leader is outdated and it should step down immediately (break out of the loop)
+			// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
+			for !isSuccess {
+				// create args structure
+				rf.mu.Lock()
+				// last log index
+				nextIndex := rf.nextIndex[targetID]
+
+				prevLogIndex := nextIndex - 1
+
+				// last log term
+				prevLogTerm := -1
+				if prevLogIndex > 0 {
+					prevLogTerm = rf.log[prevLogIndex-1].Term
+				}
+
+				// log entries to apply
+				// rf.printLog()
+				logs := []*LogStruct{}
+				// when heartbeats, send empty logs, else send full logs
+				if !isHeartBeat && len(rf.log) > 0 {
+					logs = rf.log[nextIndex-1:]
+				}
+				// fmt.Println(logs)
+				// fmt.Println(rf.isLeader, rf.me, logs, isHeartBeat)
+				// save term
+				recordTerm := rf.currentTerm
+
+				args := AppendEntriesArgs{
+					rf.currentTerm,
+					rf.me,
+					prevLogIndex, // prevLogIndex
+					prevLogTerm,
+					logs, // the input argument
+					rf.commitIndex,
+				}
+
+				rf.mu.Unlock()
+
+				reply := AppendEntriesReply{
+					-1,
+					false,
+				}
+				// send RPC call
+				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
+				// heartbeat simply returns
+				if isHeartBeat {
+					break
+				}
+
+				// Below is broadcasting real log entries:
+				//
+				isSuccess = reply.Success
+				rf.mu.Lock()
+				// leader out dated
+				if recordTerm != rf.currentTerm {
+					fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
+					rf.mu.Unlock()
+					break
+				}
+
+				if !rpcSuccess {
+					fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+					rf.mu.Unlock()
+				} else {
+					if isSuccess { // If successful: update nextIndex and matchIndex for follower
+						// since success from follower means all logs have been up to date,
+						// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
+						rf.matchIndex[targetID] = len(rf.log)
+						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
+
+						rf.mu.Unlock()
+					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
+						// rf.currentTerm = reply.Term
+						fmt.Println("pppppppppppppp", rf.me, targetID, rf.currentTerm, reply.Term, rf.isLeader)
+						rf.updateState("follower", reply.Term)
+						rf.mu.Unlock()
+						// go func() { rf.checkTimeouts() }()
+						// escape the check loop
+						break
+					} else { // because of log inconsistency, decrement nextIndex and retry
+						// fmt.Println("%%%%%%%%%% ", reply.Term, rf.currentTerm)
+						rf.nextIndex[targetID]--
+						rf.mu.Unlock()
+					}
+				}
+			}
+			wgg.Done()
+		}(&wg, rf)
+	}
+	wg.Wait()
+
+	// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
+	// then this log is actually commited and we need to forward our commitIndex to that point
+	rf.mu.Lock()
+	// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
+	m := make(map[int]int)
+	for _, matchIndex := range rf.matchIndex {
+		m[matchIndex]++ // default is 0
+	}
+	keys := []int{}
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+	sum := 0
+	for _, N := range keys {
+		if N <= rf.commitIndex {
+			break
+		}
+		sum += m[N]
+		// if exist a majority of matchIndex[i] ≥ N,
+		// and log[N].term == currentTerm, set commitIndex = N
+		if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
+			rf.commitIndex = N
+			rf.applyCond.Signal()
+			break // break loop
+		}
+	}
+	rf.mu.Unlock()
+}
+
+// func (rf *Raft) broadcastEntries() {
+// 	// debug message
+// 	// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
+// 	wg := sync.WaitGroup{}
+// 	// send heartbeat to followers
+// 	for i := range rf.peers {
+// 		// skip leader itself
+// 		if i == rf.me {
+// 			continue
+// 		}
+
+// 		wg.Add(1)
+
+// 		targetID := i // save index
+// 		// this goroutine send RPC, process RPC and establish leadership having majority votes
+// 		go func(wgg *sync.WaitGroup, rf *Raft) {
+
+// 			rf.mu.Lock()
+// 			isSuccess := false
+// 			rf.mu.Unlock()
+// 			// if the response is not successful, then there are two possible causes:
+// 			// 1. This leader is outdated and it should step down immediately (break out of the loop)
+// 			// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
+// 			for !isSuccess {
+// 				// create args structure
+// 				rf.mu.Lock()
+// 				// last log index
+// 				lastRfLogIndex := len(rf.log)
+
+// 				// last log term
+// 				prevLogTerm := -1
+// 				if len(rf.log) > 0 {
+// 					prevLogTerm = rf.log[len(rf.log)-1].Term
+// 				}
+
+// 				// log entries to apply
+// 				// rf.printLog()
+// 				logs := []*LogStruct{}
+// 				nextIndex := rf.nextIndex[targetID]
+// 				// fmt.Println(rf.log, nextIndex)
+// 				if lastRfLogIndex >= nextIndex {
+// 					logs = rf.log[nextIndex-1:]
+// 				}
+// 				// fmt.Println(logs)
+
+// 				// save term
+// 				recordTerm := rf.currentTerm
+
+// 				args := AppendEntriesArgs{
+// 					rf.currentTerm,
+// 					rf.me,
+// 					lastRfLogIndex - 1, // prevLogIndex
+// 					prevLogTerm,
+// 					logs,
+// 					rf.commitIndex,
+// 				}
+
+// 				rf.mu.Unlock()
+
+// 				reply := AppendEntriesReply{
+// 					-1,
+// 					false,
+// 				}
+// 				// send RPC call
+// 				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
+// 				isSuccess = reply.Success
+// 				rf.mu.Lock()
+// 				// leader out dated
+// 				if recordTerm != rf.currentTerm {
+// 					fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
+// 					rf.mu.Unlock()
+// 					break
+// 				}
+
+// 				if !rpcSuccess {
+// 					// fmt.Printf("sendAppendEntries RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+// 					rf.mu.Unlock()
+// 				} else {
+// 					if isSuccess { // If successful: update nextIndex and matchIndex for follower
+// 						// since success from follower means all logs have been up to date,
+// 						// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
+// 						rf.matchIndex[targetID] = len(rf.log)
+// 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
+
+// 						rf.mu.Unlock()
+// 					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
+// 						// rf.currentTerm = reply.Term
+// 						fmt.Println("pppppppppppppp", rf.me, targetID, rf.currentTerm, reply.Term, rf.isLeader)
+// 						rf.updateState("follower", reply.Term)
+// 						rf.mu.Unlock()
+// 						// go func() { rf.checkTimeouts() }()
+// 						// escape the check loop
+// 						break
+// 					} else { // because of log inconsistency, decrement nextIndex and retry
+// 						// fmt.Println("%%%%%%%%%% ", reply.Term, rf.currentTerm)
+// 						rf.nextIndex[targetID]--
+// 						rf.mu.Unlock()
+// 					}
+// 				}
+// 			}
+// 			wgg.Done()
+// 		}(&wg, rf)
+// 	}
+// 	wg.Wait()
+
+// 	// Apply the last rule for leader here, i.e. a log replicated on a majority of servers but not commited,
+// 	// then this log is actually commited and we need to forward our commitIndex to that point
+// 	rf.mu.Lock()
+// 	// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
+// 	m := make(map[int]int)
+// 	for _, matchIndex := range rf.matchIndex {
+// 		m[matchIndex]++ // default is 0
+// 	}
+// 	keys := []int{}
+// 	for k := range m {
+// 		keys = append(keys, k)
+// 	}
+// 	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+// 	sum := 0
+// 	for _, N := range keys {
+// 		if N <= rf.commitIndex {
+// 			break
+// 		}
+// 		sum += m[N]
+// 		// if exist a majority of matchIndex[i] ≥ N,
+// 		// and log[N].term == currentTerm, set commitIndex = N
+// 		if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
+// 			rf.commitIndex = N
+// 			rf.applyCond.Signal()
+// 			break // break loop
+// 		}
+// 	}
+// 	rf.mu.Unlock()
+// }
 
 func (rf *Raft) startElection() {
 	// always vote for itself
@@ -720,7 +875,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	// Increment current Term
 	rf.currentTerm++
-	fmt.Println(rf.me, rf.isLeader, " is starting the election on term ", rf.currentTerm)
+	fmt.Println(rf.me, rf.isLeader, " is starting the election on term ", rf.currentTerm, rf.log, rf.matchIndex, rf.nextIndex)
 	// vote for yourself
 	rf.votedFor = rf.me
 	// // clear voted for
@@ -764,7 +919,7 @@ func (rf *Raft) startElection() {
 			rpcSuccess := rf.sendRequestVote(targetID, &voteArgs, &voteReply)
 			rf.mu.Lock()
 			if !rpcSuccess {
-				// fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
+				fmt.Printf("sendRequestVote RPC is not successful from senderID %v to receiverID %v \n", rf.me, targetID)
 			} else {
 				// successful rpc, process result here
 
@@ -784,7 +939,6 @@ func (rf *Raft) startElection() {
 						rf.updateState("leader", -99999) // term is not used
 					}
 					electionLock.Unlock()
-
 				} else {
 					// If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower!
 					if voteReply.Term > rf.currentTerm {
@@ -879,6 +1033,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start checktimeouts
 	go func() { rf.checkTimeouts() }()
+
+	//
+	// go func() { rf.heartBeats() }()
 
 	// start applying commited messages
 	go func() { rf.applyCommited(applyCh) }()
