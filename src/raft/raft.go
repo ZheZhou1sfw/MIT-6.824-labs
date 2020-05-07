@@ -119,18 +119,18 @@ func (rf *Raft) GetState() (int, bool) {
 
 // Helper function that prints out the log of the server
 func (rf *Raft) printLog() {
-	// var f string
-	// if rf.isLeader {
-	// 	f = "true"
-	// } else {
-	// 	f = "false"
-	// }
-	// fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied)
+	var f string
+	if rf.isLeader {
+		f = "true"
+	} else {
+		f = "false"
+	}
+	fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v, matchIndex is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied, rf.matchIndex)
 	// for i, l := range rf.log {
 	// 	fmt.Print(" ", i, ": ")
 	// 	fmt.Print(l)
 	// }
-	// fmt.Println("")
+	fmt.Println("")
 }
 
 // Helper function that insert a LogStruct to the given index of the lock
@@ -176,8 +176,11 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 			rf.nextIndex[i] = len(rf.log) + 1
 			rf.matchIndex[i] = 0
 		}
+		// the match index of leader itself is known
+		rf.matchIndex[rf.me] = len(rf.log)
 		// start enhancedHeartBeats()
 		go func() { rf.heartBeats() }()
+		// go func() { rf.broadcastEntries(false) }()
 	}
 }
 
@@ -232,7 +235,7 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 		for rf.commitIndex > rf.lastApplied {
 			// increment lastApplied
 			rf.lastApplied++
-			fmt.Println(rf.me, "is applying message index", rf.lastApplied)
+			// fmt.Println(rf.me, "is applying message index", rf.lastApplied, rf.commitIndex, rf.log)
 			// apply log[lastApplied] to state machine
 			// newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.commitIndex}
 			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied}
@@ -341,6 +344,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	} else if args.Term > rf.currentTerm {
 		rf.updateState("follower", args.Term)
+		reply.Term = rf.currentTerm
 		// this will abort any undergoing election because
 		// the new term is promised to be higher than the term during election
 	}
@@ -359,12 +363,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// if args.LogEntires != nil && len(args.LogEntires) > 0 {
 	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	// fmt.Println("$$$$$$$$$$$")
-	// fmt.Println(rf.me, args.PrevLogIndex, rf.log)
-	if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
+	// fmt.Println("&&&&&&", rf.me, args.PrevLogIndex, rf.log)
+	if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
 		// fmt.Println("**********", rf.me, rf.log, args.PrevLogIndex, args.PrevLogTerm)
 		reply.Success = false
+		// delete conflicting entires and all following it
+		// if len(rf.log) >= args.PrevLogIndex {
+		// 	rf.log = rf.log[:args.PrevLogIndex-1]
+		// }
 	} else {
 		reply.Success = true
+		// test
+		// fmt.Println("((((((", args.LeaderID, rf.me, args.LogEntires)
+		// if len(args.LogEntires) == 0 {
+		// 	return
+		// }
 		// If an existing entry conflicts with a new one (same index but
 		// different terms), delete the existing entry and all that follow it
 		i := 1
@@ -375,40 +388,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 			if rf.log[toInsertIndex-1].Term != args.LogEntires[i-1].Term {
-				for j := i; j <= len(args.LogEntires); j++ {
-					if len(rf.log) < args.PrevLogIndex+j {
-						break
-					}
-					rf.log[args.PrevLogIndex+j-1] = nil // delete
-				}
+				rf.log = rf.log[:toInsertIndex-1]
 				break
 			}
 		}
-		// Append any new entries not already in the log {
-		for ; i <= len(args.LogEntires); i++ {
-			toInsertIndex := args.PrevLogIndex + i
-			// fmt.Println("!!!!!!!! ", toInsertIndex)
-			// rf.log[toInsertIndex-1] = args.LogEntires[i-1]
-			rf.insertLog(toInsertIndex, args.LogEntires[i-1].Command)
-		}
-	}
-
-	// }
-	// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-	if args.LeaderCommit > rf.commitIndex {
-		// oldCommitIndex := rf.commitIndex
-		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
-		// follower signal commit
-		// for rf.commitIndex > rf.lastApplied && oldCommitIndex < rf.commitIndex {
-		// 	// fmt.Println("!!!!!!!!!", rf.me, rf.isLeader, rf.commitIndex, rf.lastApplied, oldCommitIndex)
-		// 	// rf.mu.Unlock()
-		// 	rf.applyCond.Signal()
-		// 	// time.Sleep(time.Millisecond)
-		// 	// rf.mu.Lock()
-		// 	oldCommitIndex++
+		// Append any new entries not already in the log
+		// for ; i <= len(args.LogEntires); i++ {
+		// 	toInsertIndex := args.PrevLogIndex + i
+		// 	rf.insertLog(toInsertIndex, args.LogEntires[i-1].Command)
 		// }
-		if rf.commitIndex > rf.lastApplied {
-			rf.applyCond.Signal()
+		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntires[i-1:]...)
+		// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+		if args.LeaderCommit > rf.commitIndex {
+			// oldCommitIndex := rf.commitIndex
+			// rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.LogEntires))
+			// follower signal commit
+			// for rf.commitIndex > rf.lastApplied && oldCommitIndex < rf.commitIndex {
+			// 	// fmt.Println("!!!!!!!!!", rf.me, rf.isLeader, rf.commitIndex, rf.lastApplied, oldCommitIndex)
+			// 	// rf.mu.Unlock()
+			// 	rf.applyCond.Signal()
+			// 	// time.Sleep(time.Millisecond)
+			// 	// rf.mu.Lock()
+			// 	oldCommitIndex++
+			// }
+			if rf.commitIndex > rf.lastApplied {
+				rf.applyCond.Signal()
+			}
 		}
 	}
 
@@ -492,7 +498,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// apply to leader's local log, should be the next index of the current commitIndex.
 	// If that location is occupied, definitely sends a warning
-	targetCommitIndex := rf.commitIndex + 1
+
+	// targetCommitIndex := rf.commitIndex + 1
+	targetCommitIndex := len(rf.log) + 1
+
 	// if rf.log[targetCommitIndex] != nil {
 	// 	fmt.Println("Leader's local log already occupied. Some elements get overwritten!!")
 	// }
@@ -522,7 +531,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// }
 	// fmt.Println("Yes yes yes yes")
 	// fmt.Println(index, term, isLeader)
-	// rf.printLog()
+	rf.printLog()
 	// rf.mu.Lock()
 	// fmt.Println(">>>>>>>>>>>>>>")
 	// fmt.Println(rf.me, rf.lastApplied, rf.nextIndex, rf.matchIndex)
@@ -586,8 +595,28 @@ func (rf *Raft) heartBeats() {
 		rf.mu.Lock()
 		// fmt.Println("current leader is", rf.me, rf.isLeader, rf.currentTerm)
 		rf.mu.Unlock()
-		rf.printLog()
-		go func() { rf.broadcastEntries(true) }()
+
+		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+		rf.mu.Lock()
+		lastLogIndex := len(rf.log)
+		f := false
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+			if rf.nextIndex[i] <= lastLogIndex {
+				f = true
+				go func() { rf.broadcastEntries(false) }()
+
+				break
+			}
+		}
+		// if not sending appendentries, then do normal heartbeats
+		if !f {
+			go func() { rf.broadcastEntries(true) }()
+		}
+		// rf.printLog()
+		rf.mu.Unlock()
 		// sleep for a while. Limit 10 heartbeats per second
 		time.Sleep(time.Millisecond * 120)
 		rf.mu.Lock()
@@ -679,7 +708,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				rf.mu.Lock()
 				// leader out dated
 				if recordTerm != rf.currentTerm {
-					fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
+					// fmt.Println("Leader ", rf.me, rf.isLeader, " is outdated during sending enhancedHeart beats to server ", targetID, rf.currentTerm)
 					rf.mu.Unlock()
 					break
 				}
@@ -732,6 +761,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 					sum += m[N]
 					// if exist a majority of matchIndex[i] ≥ N,
 					// and log[N].term == currentTerm, set commitIndex = N
+					// fmt.Println("SumSumSum", rf.me, rf.isLeader, sum, m)
 					if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
 						rf.commitIndex = N
 						rf.applyCond.Signal()
@@ -758,7 +788,7 @@ func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	// Increment current Term
 	rf.currentTerm++
-	fmt.Println(rf.me, rf.isLeader, " is starting the election on term ", rf.currentTerm, rf.log, rf.matchIndex, rf.nextIndex)
+	// fmt.Println(rf.me, rf.isLeader, " is starting the election on term ", rf.currentTerm, rf.log, rf.matchIndex, rf.nextIndex)
 	// vote for yourself
 	rf.votedFor = rf.me
 	// // clear voted for
