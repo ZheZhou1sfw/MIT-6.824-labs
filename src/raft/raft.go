@@ -119,18 +119,18 @@ func (rf *Raft) GetState() (int, bool) {
 
 // Helper function that prints out the log of the server
 func (rf *Raft) printLog() {
-	var f string
-	if rf.isLeader {
-		f = "true"
-	} else {
-		f = "false"
-	}
-	fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v, matchIndex is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied, rf.matchIndex)
-	// for i, l := range rf.log {
-	// 	fmt.Print(" ", i, ": ")
-	// 	fmt.Print(l)
+	// var f string
+	// if rf.isLeader {
+	// 	f = "true"
+	// } else {
+	// 	f = "false"
 	// }
-	fmt.Println("")
+	// fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v, matchIndex is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied, rf.matchIndex)
+	// // for i, l := range rf.log {
+	// // 	fmt.Print(" ", i, ": ")
+	// // 	fmt.Print(l)
+	// // }
+	// fmt.Println("")
 }
 
 // Helper function that insert a LogStruct to the given index of the lock
@@ -521,7 +521,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// return when this is applied to local machine! Wrong! Should return immediately
 	// currentApplied := rf.lastApplied
 	rf.mu.Unlock()
-	go func() { rf.broadcastEntries(false) }()
+	// go func() { rf.broadcastEntries(false) }()
 	// for currentApplied < targetCommitIndex {
 	// 	time.Sleep(time.Millisecond * 20)
 	// 	rf.mu.Lock()	// 	rf.mu.Lock()	// 	rf.mu.Lock()	// 	rf.mu.Lock()
