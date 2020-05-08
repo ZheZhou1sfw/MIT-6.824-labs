@@ -29,7 +29,7 @@ import (
 	"../labrpc"
 )
 
-// helper min function for comparing integers
+// helper min function for comparing integers, return the smaller one
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -100,18 +100,14 @@ type Raft struct {
 
 	// condition variable sync.Cond for triggering applyCommited
 	applyCond *sync.Cond
-	applyMu   sync.Mutex
 }
 
 // return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
 	// Your code here (2A).
 	rf.mu.Lock()
-	term = rf.currentTerm
-	isleader = rf.isLeader
+	term := rf.currentTerm
+	isleader := rf.isLeader
 	rf.mu.Unlock()
 
 	return term, isleader
@@ -120,11 +116,9 @@ func (rf *Raft) GetState() (int, bool) {
 // Helper function that prints out the log of the server,
 // and some messages for diagnosing.
 func (rf *Raft) printLog() {
-	var f string
+	f := "false"
 	if rf.isLeader {
 		f = "true"
-	} else {
-		f = "false"
 	}
 	fmt.Printf("The log entries of the %v-th server which is a leader? %v, its commiteIndex is %v and lastApplied is %v, matchIndex is %v \n", rf.me, f, rf.commitIndex, rf.lastApplied, rf.matchIndex)
 	for i, l := range rf.log {
@@ -140,7 +134,7 @@ func (rf *Raft) printLog() {
 func (rf *Raft) insertLog(index int, command interface{}) {
 	// if this is the case, then we are inserting beyond the possible location
 	if len(rf.log) < index-1 {
-		fmt.Println("Something very wrong in insertLog!!")
+		fmt.Println("The index you want to insert the log is beyond the maximum possible location")
 	} else if len(rf.log) == index-1 { // append
 		rf.log = append(rf.log, &LogStruct{rf.currentTerm, command})
 	} else { // replace
@@ -248,13 +242,10 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	// 2A
 	Term         int
 	CandidateID  int
 	LastLogIndex int
 	LastLogTerm  int
-	// 2B
-
 }
 
 //
@@ -272,7 +263,6 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	// 2A
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
@@ -313,7 +303,7 @@ type AppendEntriesArgs struct {
 	LeaderID     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	LogEntires   []*LogStruct
+	LogEntries   []*LogStruct
 	LeaderCommit int
 }
 
@@ -356,22 +346,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		// If an existing entry conflicts with a new one (same index but
 		// different terms), delete the existing entry and all that follow it
+
+		// i is the index of args.LogEntries that mismatch occurs
 		i := 1
 
-		for ; i <= len(args.LogEntires); i++ {
+		for ; i <= len(args.LogEntries); i++ {
 			toInsertIndex := args.PrevLogIndex + i
 			if len(rf.log) < toInsertIndex {
 				break
 			}
-			if rf.log[toInsertIndex-1].Term != args.LogEntires[i-1].Term {
+			if rf.log[toInsertIndex-1].Term != args.LogEntries[i-1].Term {
 				rf.log = rf.log[:toInsertIndex-1]
 				break
 			}
 		}
 		// Append any new entries not already in the log
-		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntires[i-1:]...)
+		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntries[i-1:]...)
 		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.LogEntires))
+			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.LogEntries))
 			// follower signal commit
 			if rf.commitIndex > rf.lastApplied {
 				rf.applyCond.Signal()
@@ -380,7 +372,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// rf.printLog()
-
 }
 
 //
@@ -519,9 +510,10 @@ func (rf *Raft) heartBeats() {
 
 	// If the raft instance is killed, should kill this sub-goroutine to prevent goroutine leak.
 	for stillLeader && !rf.killed() {
-		rf.mu.Lock()
+		// debug info:
+		// rf.mu.Lock()
 		// fmt.Println("current leader is", rf.me, rf.isLeader, rf.currentTerm)
-		rf.mu.Unlock()
+		// rf.mu.Unlock()
 
 		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 		rf.mu.Lock()
@@ -570,10 +562,8 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 		targetID := i // save index
 		// this goroutine send RPC, process RPC and establish leadership having majority votes
 		go func(wgg *sync.WaitGroup, rf *Raft) {
-
-			rf.mu.Lock()
+			// a bool represents weather appendEntries is successful
 			isSuccess := false
-			rf.mu.Unlock()
 			// if the response is not successful, then there are two possible causes:
 			// 1. This leader is outdated and it should step down immediately (break out of the loop)
 			// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
