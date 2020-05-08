@@ -227,7 +227,7 @@ func (rf *Raft) readPersist(data []byte) {
 // A goroutine that periodically apply newly commited command to the channel (application)
 // Using Conditional variable, this goroutine will only be waken when signaled.
 func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
-	for {
+	for !rf.killed() {
 		rf.applyCond.L.Lock()
 		rf.applyCond.Wait()
 		// ready to apply command
@@ -548,7 +548,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //  A leader server will suppress(end) this functionality / replaced with heartbeat
 //
 func (rf *Raft) checkTimeouts() {
-	for {
+	// prevent goroutine leak
+	for !rf.killed() {
 		rf.mu.Lock()
 		// fmt.Println(rf.me, " is checking timeout", "I am a leader?", rf.isLeader)
 		// durationPassed := time.Now().Sub(rf.lastHeardFromLeader).Nanoseconds() / 1e6
@@ -591,7 +592,8 @@ func (rf *Raft) heartBeats() {
 	stillLeader := rf.isLeader
 	rf.mu.Unlock()
 
-	for stillLeader {
+	// If the raft instance is killed, should kill this sub-goroutine to prevent goroutine leak.
+	for stillLeader && !rf.killed() {
 		rf.mu.Lock()
 		// fmt.Println("current leader is", rf.me, rf.isLeader, rf.currentTerm)
 		rf.mu.Unlock()
@@ -651,7 +653,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 			// if the response is not successful, then there are two possible causes:
 			// 1. This leader is outdated and it should step down immediately (break out of the loop)
 			// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
-			for !isSuccess {
+			for !isSuccess && !rf.killed() {
 				// create args structure
 				rf.mu.Lock()
 				// last log index
