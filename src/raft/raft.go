@@ -312,10 +312,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				lastLogTerm = rf.log[len(rf.log)-1].Term
 			}
 			lastLogIndex := len(rf.log)
-			fmt.Println(rf.me, "is receiving a vote")
+			// fmt.Println(rf.me, "is receiving a vote")
 			// if candidate’s log is at least as up-to-date as receiver’s log, grant vote
 			if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
-				fmt.Println(rf.me, "is voting for some other node")
+				// fmt.Println(rf.me, "is voting for some other node")
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
 				rf.persist()
@@ -713,7 +713,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 							if target == -1 {
 								target = reply.IndexOfConflict
 							}
-							// fmt.Println("------", target)
+							fmt.Println("------", target)
 							rf.nextIndex[targetID] = target
 						}
 						// rf.nextIndex[targetID]--
@@ -755,12 +755,13 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				// }
 				prevCommitIndex := rf.commitIndex
 				// for mIdx := rf.commitIndex + 1; mIdx <= maxMatchIndex && mIdx <= len(rf.log); mIdx++ {
-				for mIdx := rf.commitIndex + 1; mIdx <= len(rf.log); mIdx++ {
+				for mIdx := len(rf.log); mIdx >= rf.commitIndex+1; mIdx-- {
 					if _, ok := m[mIdx]; ok {
 						sum += m[mIdx]
 					}
 					if sum > len(rf.peers)/2 && rf.log[mIdx-1].Term == rf.currentTerm {
 						rf.commitIndex = mIdx
+						break
 					}
 				}
 				if rf.commitIndex > prevCommitIndex {
