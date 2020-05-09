@@ -340,8 +340,10 @@ type AppendEntriesArgs struct {
 //
 type AppendEntriesReply struct {
 	// Your data here (2A).
-	Term    int
-	Success bool
+	Term            int
+	Success         bool
+	ConflictingTerm int
+	IndexOfConflict int
 }
 
 // AppendEntries RPC handler
@@ -370,6 +372,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
 		reply.Success = false
+		// advanced technique to skip more than one nextIndex at a time
+		if len(rf.log) >= args.PrevLogIndex {
+			reply.ConflictingTerm = rf.log[args.PrevLogIndex-1].Term
+			theIndex := args.PrevLogIndex
+			for ; theIndex > 0; theIndex-- {
+				if rf.log[theIndex-1].Term == reply.ConflictingTerm {
+					theIndex--
+				} else {
+					break
+				}
+			}
+			reply.IndexOfConflict = theIndex + 1
+		} else { // not found that log position
+			reply.ConflictingTerm = -1
+			reply.IndexOfConflict = len(rf.log)
+		}
 	} else {
 		reply.Success = true
 		// If an existing entry conflicts with a new one (same index but
@@ -636,6 +654,8 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				reply := AppendEntriesReply{
 					-1,
 					false,
+					-1,
+					-1,
 				}
 				// send RPC call
 				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
@@ -671,7 +691,24 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						break
 					} else {
 						// because of log inconsistency, decrement nextIndex and retry
-						rf.nextIndex[targetID]--
+						if reply.ConflictingTerm == -1 {
+							// rf.nextIndex[targetID]--
+							rf.nextIndex[targetID] = reply.IndexOfConflict
+						} else {
+							// advanced skip nextIndex
+							// search for last entry of the log that has conflicting term
+							target := -1
+							for j := len(rf.log); j > 0; j-- {
+								if rf.log[j-1].Term == reply.ConflictingTerm {
+									target = j + 1
+									break
+								}
+							}
+							if target == -1 {
+								target = reply.IndexOfConflict
+							}
+							rf.nextIndex[targetID] = target
+						}
 						rf.mu.Unlock()
 					}
 				}
