@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,8 +39,13 @@ func min(a, b int) int {
 	return b
 }
 
-// import "bytes"
-// import "../labgob"
+// helper max function for comparing integers, return the larger one
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -373,10 +377,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
 		reply.Success = false
 		// advanced technique to skip more than one nextIndex at a time
-		if len(rf.log) >= args.PrevLogIndex {
+		if len(rf.log) < args.PrevLogIndex {
+			reply.ConflictingTerm = -1
+			reply.IndexOfConflict = len(rf.log)
+		} else { // not found that log position
 			reply.ConflictingTerm = rf.log[args.PrevLogIndex-1].Term
 			theIndex := args.PrevLogIndex
-			for ; theIndex > 0; theIndex-- {
+			for theIndex > 0 {
 				if rf.log[theIndex-1].Term == reply.ConflictingTerm {
 					theIndex--
 				} else {
@@ -384,9 +391,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 			}
 			reply.IndexOfConflict = theIndex + 1
-		} else { // not found that log position
-			reply.ConflictingTerm = -1
-			reply.IndexOfConflict = len(rf.log)
 		}
 	} else {
 		reply.Success = true
@@ -408,6 +412,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		// Append any new entries not already in the log
+		fmt.Println("?????", rf.log, args.PrevLogIndex, i)
 		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntries[i-1:]...)
 		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
@@ -682,7 +687,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 
 						rf.matchIndex[targetID] = prevLogIndex + len(logs)
 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
-
+						fmt.Println("(((((((", rf.nextIndex[targetID])
 						rf.mu.Unlock()
 					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 						rf.updateState("follower", reply.Term)
@@ -693,6 +698,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						// because of log inconsistency, decrement nextIndex and retry
 						if reply.ConflictingTerm == -1 {
 							// rf.nextIndex[targetID]--
+							fmt.Println(")))))))))", reply.IndexOfConflict)
 							rf.nextIndex[targetID] = reply.IndexOfConflict
 						} else {
 							// advanced skip nextIndex
@@ -707,8 +713,10 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 							if target == -1 {
 								target = reply.IndexOfConflict
 							}
+							// fmt.Println("------", target)
 							rf.nextIndex[targetID] = target
 						}
+						// rf.nextIndex[targetID]--
 						rf.mu.Unlock()
 					}
 				}
@@ -717,27 +725,46 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				rf.mu.Lock()
 				// use a map to store all matchIndex. Sort it. If there is a matchIndex = N that satisfy the requirements, set commitIndex = N
 				m := make(map[int]int)
+				maxMatchIndex := 0
 				for _, matchIndex := range rf.matchIndex {
 					m[matchIndex]++ // default is 0
+					maxMatchIndex = max(maxMatchIndex, matchIndex)
 				}
-				keys := []int{}
-				for k := range m {
-					keys = append(keys, k)
-				}
-				sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+				// keys := []int{}
+				// for k := range m {
+				// keys = append(keys, k)
+				// }
+				// sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+				// fmt.Println("kkkkkkk", keys, m)
 				sum := 0
-				for _, N := range keys {
-					if N <= rf.commitIndex {
-						break
+				// for _, N := range keys {
+				// 	if N <= rf.commitIndex {
+				// 		break
+				// 	}
+
+				// 	sum += m[N]
+				// 	fmt.Println("NNNNNN", N, sum, rf.commitIndex)
+				// 	// if exist a majority of matchIndex[i] ≥ N,
+				// 	// and log[N].term == currentTerm, set commitIndex = N
+				// 	if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
+				// 		rf.commitIndex = N
+				// 		rf.applyCond.Signal()
+				// 		break // break loop
+				// 	}
+
+				// }
+				prevCommitIndex := rf.commitIndex
+				// for mIdx := rf.commitIndex + 1; mIdx <= maxMatchIndex && mIdx <= len(rf.log); mIdx++ {
+				for mIdx := rf.commitIndex + 1; mIdx <= len(rf.log); mIdx++ {
+					if _, ok := m[mIdx]; ok {
+						sum += m[mIdx]
 					}
-					sum += m[N]
-					// if exist a majority of matchIndex[i] ≥ N,
-					// and log[N].term == currentTerm, set commitIndex = N
-					if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
-						rf.commitIndex = N
-						rf.applyCond.Signal()
-						break // break loop
+					if sum > len(rf.peers)/2 && rf.log[mIdx-1].Term == rf.currentTerm {
+						rf.commitIndex = mIdx
 					}
+				}
+				if rf.commitIndex > prevCommitIndex {
+					rf.applyCond.Signal()
 				}
 				rf.mu.Unlock()
 			}
