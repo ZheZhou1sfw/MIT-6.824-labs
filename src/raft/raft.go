@@ -358,6 +358,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
+		reply.IndexOfConflict = -200
 		return
 	} else if args.Term > rf.currentTerm {
 		rf.updateState("follower", args.Term)
@@ -379,7 +380,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// advanced technique to skip more than one nextIndex at a time
 		if len(rf.log) < args.PrevLogIndex {
 			reply.ConflictingTerm = -1
-			reply.IndexOfConflict = len(rf.log)
+			reply.IndexOfConflict = len(rf.log) + 1
+			// reply.IndexOfConflict = -300
+
+			// fmt.Println("111111111", reply)
 		} else { // not found that log position
 			reply.ConflictingTerm = rf.log[args.PrevLogIndex-1].Term
 			theIndex := args.PrevLogIndex
@@ -391,6 +395,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 			}
 			reply.IndexOfConflict = theIndex + 1
+			// fmt.Println("2222222222", reply.ConflictingTerm, reply.IndexOfConflict)
 		}
 	} else {
 		reply.Success = true
@@ -412,7 +417,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		// Append any new entries not already in the log
-		fmt.Println("?????", rf.log, args.PrevLogIndex, i)
+		// fmt.Println("?????", rf.log, args.PrevLogIndex, i)
 		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntries[i-1:]...)
 		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
@@ -659,8 +664,8 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				reply := AppendEntriesReply{
 					-1,
 					false,
-					-1,
-					-1,
+					-10,
+					-10,
 				}
 				// send RPC call
 				rpcSuccess := rf.sendAppendEntries(targetID, &args, &reply)
@@ -687,7 +692,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 
 						rf.matchIndex[targetID] = prevLogIndex + len(logs)
 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
-						fmt.Println("(((((((", rf.nextIndex[targetID])
+						// fmt.Println("(((((((", rf.nextIndex[targetID])
 						rf.mu.Unlock()
 					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 						rf.updateState("follower", reply.Term)
@@ -698,7 +703,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						// because of log inconsistency, decrement nextIndex and retry
 						if reply.ConflictingTerm == -1 {
 							// rf.nextIndex[targetID]--
-							fmt.Println(")))))))))", reply.IndexOfConflict)
+							// fmt.Println(")))))))))", &reply, reply.IndexOfConflict-1)
 							rf.nextIndex[targetID] = reply.IndexOfConflict
 						} else {
 							// advanced skip nextIndex
