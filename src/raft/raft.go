@@ -199,14 +199,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.log)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
-
 }
 
 //
@@ -231,18 +223,6 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.votedFor = votedFor // represent nil
 		rf.log = logs
 	}
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 }
 
 //
@@ -377,13 +357,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	if len(rf.log) < args.PrevLogIndex || (len(rf.log) > 0 && args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
 		reply.Success = false
-		// advanced technique to skip more than one nextIndex at a time
+		// Advanced technique to skip more than one nextIndex at a time.
+		// This part strictly follows the guide.
 		if len(rf.log) < args.PrevLogIndex {
 			reply.ConflictingTerm = -1
 			reply.IndexOfConflict = len(rf.log) + 1
-			// reply.IndexOfConflict = -300
-
-			// fmt.Println("111111111", reply)
 		} else { // not found that log position
 			reply.ConflictingTerm = rf.log[args.PrevLogIndex-1].Term
 			theIndex := args.PrevLogIndex
@@ -395,7 +373,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 			}
 			reply.IndexOfConflict = theIndex + 1
-			// fmt.Println("2222222222", reply.ConflictingTerm, reply.IndexOfConflict)
 		}
 	} else {
 		reply.Success = true
@@ -417,7 +394,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		// Append any new entries not already in the log
-		// fmt.Println("?????", rf.log, args.PrevLogIndex, i)
 		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntries[i-1:]...)
 		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
@@ -584,7 +560,6 @@ func (rf *Raft) heartBeats() {
 			if rf.nextIndex[i] <= lastLogIndex {
 				f = true
 				go func() { rf.broadcastEntries(false) }()
-
 				break
 			}
 		}
@@ -688,11 +663,8 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						// If successful: update nextIndex and matchIndex for follower
 						// since success from follower means all logs have been up to date,
 						// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
-						// rf.matchIndex[targetID] = len(rf.log)
-
 						rf.matchIndex[targetID] = prevLogIndex + len(logs)
 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
-						// fmt.Println("(((((((", rf.nextIndex[targetID])
 						rf.mu.Unlock()
 					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 						rf.updateState("follower", reply.Term)
@@ -702,8 +674,6 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 					} else {
 						// because of log inconsistency, decrement nextIndex and retry
 						if reply.ConflictingTerm == -1 {
-							// rf.nextIndex[targetID]--
-							// fmt.Println(")))))))))", &reply, reply.IndexOfConflict-1)
 							rf.nextIndex[targetID] = reply.IndexOfConflict
 						} else {
 							// advanced skip nextIndex
@@ -718,10 +688,8 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 							if target == -1 {
 								target = reply.IndexOfConflict
 							}
-							fmt.Println("------", target)
 							rf.nextIndex[targetID] = target
 						}
-						// rf.nextIndex[targetID]--
 						rf.mu.Unlock()
 					}
 				}
@@ -735,31 +703,11 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 					m[matchIndex]++ // default is 0
 					maxMatchIndex = max(maxMatchIndex, matchIndex)
 				}
-				// keys := []int{}
-				// for k := range m {
-				// keys = append(keys, k)
-				// }
-				// sort.Sort(sort.Reverse(sort.IntSlice(keys)))
-				// fmt.Println("kkkkkkk", keys, m)
+
 				sum := 0
-				// for _, N := range keys {
-				// 	if N <= rf.commitIndex {
-				// 		break
-				// 	}
 
-				// 	sum += m[N]
-				// 	fmt.Println("NNNNNN", N, sum, rf.commitIndex)
-				// 	// if exist a majority of matchIndex[i] ≥ N,
-				// 	// and log[N].term == currentTerm, set commitIndex = N
-				// 	if sum > len(rf.peers)/2 && rf.log[N-1].Term == rf.currentTerm {
-				// 		rf.commitIndex = N
-				// 		rf.applyCond.Signal()
-				// 		break // break loop
-				// 	}
-
-				// }
 				prevCommitIndex := rf.commitIndex
-				// for mIdx := rf.commitIndex + 1; mIdx <= maxMatchIndex && mIdx <= len(rf.log); mIdx++ {
+				// here mIdx is the N we are looking for
 				for mIdx := len(rf.log); mIdx >= rf.commitIndex+1; mIdx-- {
 					if _, ok := m[mIdx]; ok {
 						sum += m[mIdx]
@@ -778,7 +726,6 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 		}(&wg, rf)
 	}
 	wg.Wait()
-
 }
 
 func (rf *Raft) startElection() {
