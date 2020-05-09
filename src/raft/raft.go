@@ -18,7 +18,9 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"math/rand"
 	"sort"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"../labgob"
 	"../labrpc"
 )
 
@@ -135,11 +138,13 @@ func (rf *Raft) insertLog(index int, command interface{}) {
 	// if this is the case, then we are inserting beyond the possible location
 	if len(rf.log) < index-1 {
 		fmt.Println("The index you want to insert the log is beyond the maximum possible location")
+		return
 	} else if len(rf.log) == index-1 { // append
 		rf.log = append(rf.log, &LogStruct{rf.currentTerm, command})
 	} else { // replace
 		rf.log[index-1] = &LogStruct{rf.currentTerm, command}
 	}
+	rf.persist()
 }
 
 // Update state to either follower or leader. This doesn't necessarily involve
@@ -157,6 +162,7 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 	if key == "follower" {
 		rf.currentTerm = targetTerm
 		rf.votedFor = -1
+		rf.persist()
 		if rf.isLeader {
 			rf.isLeader = false
 		}
@@ -182,6 +188,13 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 	// Example:
 	// w := new(bytes.Buffer)
 	// e := labgob.NewEncoder(w)
@@ -200,6 +213,20 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logs []*LogStruct
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil {
+		log.Fatal("decode error")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor // represent nil
+		rf.log = logs
+	}
 	// Example:
 	// r := bytes.NewBuffer(data)
 	// d := labgob.NewDecoder(r)
@@ -287,6 +314,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				fmt.Println(rf.me, "is voting for some other node")
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
+				rf.persist()
 				// reset timer
 				rf.resetTimer()
 			}
@@ -357,11 +385,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			if rf.log[toInsertIndex-1].Term != args.LogEntries[i-1].Term {
 				rf.log = rf.log[:toInsertIndex-1]
+				rf.persist()
 				break
 			}
 		}
 		// Append any new entries not already in the log
 		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntries[i-1:]...)
+		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.LogEntries))
 			// follower signal commit
@@ -694,6 +724,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	// vote for yourself
 	rf.votedFor = rf.me
+	rf.persist()
 
 	// record current term that the election starts
 	// If later this election time out then this term would be less than rf.currentTerm,
