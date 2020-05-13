@@ -1,9 +1,12 @@
 package kvraft
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
 
+	"../labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -39,7 +42,22 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := GetArgs{key}
+	reply := GetReply{ErrNoKey, ""}
+	// try forever
+	for {
+		for _, kvserver := range ck.servers {
+			ok := kvserver.Call("KVServer.Get", &args, &reply)
+			if !ok {
+				fmt.Println("RPC 'GET' failed")
+			} else {
+				// if successful
+				if reply.Err == OK {
+					return reply.Value
+				}
+			}
+		}
+	}
 }
 
 //
@@ -54,6 +72,22 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{key, value, op}
+	reply := PutAppendReply{ErrNoKey}
+	// try forever
+	for {
+		for _, kvserver := range ck.servers {
+			ok := kvserver.Call("KVServer.PutAppend", &args, &reply)
+			if !ok {
+				fmt.Println("RPC '", op, "' failed")
+			} else {
+				// if successful
+				if reply.Err == OK {
+					return
+				}
+			}
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

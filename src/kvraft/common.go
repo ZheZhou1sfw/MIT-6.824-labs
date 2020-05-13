@@ -20,6 +20,8 @@ type PutAppendArgs struct {
 
 type PutAppendReply struct {
 	Err Err
+	// Success  bool
+	// isLeader bool
 }
 
 type GetArgs struct {
@@ -28,6 +30,8 @@ type GetArgs struct {
 }
 
 type GetReply struct {
-	Err   Err
+	Err Err
+	// Success  bool
+	// isLeader bool
 	Value string
 }

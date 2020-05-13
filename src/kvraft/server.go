@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"../labgob"
-	"../labrpc"
 	"log"
-	"../raft"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"../labgob"
+	"../labrpc"
+	"../raft"
 )
 
 const Debug = 0
@@ -18,11 +20,14 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key   string
+	Value string
+	Type  string
+	Order int
 }
 
 type KVServer struct {
@@ -35,15 +40,127 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+
+	// the actual map structure
+	keyValueMap map[string]string
+
+	// the applyCond map that the dedicated applyCh check will signal.
+	// the key represents the order that each command is received by the server
+	applyCondOrderMap map[int]*sync.Cond
+
+	// atomically increasing counter stores the order when each command is received
+	counter int
 }
 
+// check if the corresponding raft instance is leader
+func (kv *KVServer) checkLeader() bool {
+	_, isLeader := kv.rf.GetState()
+	return isLeader
+}
 
+// RPC handler for Get
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	if !kv.checkLeader() {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// form the command
+	kv.mu.Lock()
+	op := Op{args.Key, "", "Get", kv.counter}
+
+	kv.rf.Start(op)
+
+	// create the sync.cond variable
+	m := sync.Mutex{}
+	condVar := sync.NewCond(&m)
+
+	kv.applyCondOrderMap[kv.counter] = condVar
+
+	kv.counter++
+	kv.mu.Unlock()
+
+	// wait for condVar
+	condVar.L.Lock()
+	condVar.Wait()
+
+	// apply get
+	kv.mu.Lock()
+	reply.Value = kv.keyValueMap[args.Key]
+	reply.Err = OK
+
+	condVar.L.Unlock()
+	kv.mu.Unlock()
 }
 
+// RPC handler for PutAppend
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	if !kv.checkLeader() {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// form the command
+	kv.mu.Lock()
+	// args.Op is either "Put" or "Append"
+	op := Op{args.Key, args.Value, args.Op, kv.counter}
+
+	kv.rf.Start(op)
+
+	// create the sync.cond variable
+	m := sync.Mutex{}
+	condVar := sync.NewCond(&m)
+
+	kv.applyCondOrderMap[kv.counter] = condVar
+
+	kv.counter++
+	kv.mu.Unlock()
+
+	// wait for condVar
+	condVar.L.Lock()
+	condVar.Wait()
+
+	// apply get
+	kv.mu.Lock()
+	if args.Op == "Put" {
+		kv.keyValueMap[args.Key] = args.Value
+	} else {
+		// exist, append
+		if _, ok := kv.keyValueMap[args.Key]; ok {
+			kv.keyValueMap[args.Key] = kv.keyValueMap[args.Key] + args.Value // append
+		} else {
+			// doesn't exist, act like put
+			kv.keyValueMap[args.Key] = args.Value
+		}
+	}
+
+	reply.Err = OK
+
+	condVar.L.Unlock()
+	kv.mu.Unlock()
+}
+
+// checkApply should be run by a dedicated goroutine to
+// periodically check if any ApplyMsg is received from ApplyCh
+func (kv *KVServer) checkApply() {
+	for !kv.killed() {
+		select {
+		case applyMsg := <-kv.applyCh:
+			// type assertion here
+			applyMsgOrder := applyMsg.Command.(Op).Order
+			kv.mu.Lock()
+			// if the index is found
+			if cond, ok := kv.applyCondOrderMap[applyMsgOrder]; ok {
+				cond.Signal()
+			}
+			kv.mu.Unlock()
+			time.Sleep(time.Millisecond * 10)
+		default:
+			time.Sleep(time.Millisecond * 10)
+		}
+	}
 }
 
 //
@@ -96,6 +213,17 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+
+	kv.keyValueMap = make(map[string]string)
+
+	//
+	kv.counter = 0
+
+	//
+	kv.applyCondOrderMap = make(map[int]*sync.Cond)
+
+	// a dedicated goroutine runs checkApply
+	go func() { kv.checkApply() }()
 
 	return kv
 }
