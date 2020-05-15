@@ -24,10 +24,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Key   string
-	Value string
-	Type  string
-	Order int
+	Key        string
+	Value      string
+	Type       string
+	Order      int
+	Identifier string
 }
 
 type KVServer struct {
@@ -68,7 +69,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// form the command
 	kv.mu.Lock()
-	op := Op{args.Key, "", "Get", kv.counter}
+	op := Op{args.Key, "", "Get", kv.counter, ""}
 
 	kv.rf.Start(op)
 
@@ -87,8 +88,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// apply get
 	kv.mu.Lock()
-	reply.Value = kv.keyValueMap[args.Key]
-	reply.Err = OK
+	if val, ok := kv.keyValueMap[args.Key]; !ok {
+		reply.Err = ErrNoKey
+	} else {
+		reply.Value = val
+		reply.Err = OK
+	}
 
 	condVar.L.Unlock()
 	kv.mu.Unlock()
@@ -104,8 +109,20 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// form the command
 	kv.mu.Lock()
+
+	for _, curCommitedLog := range kv.rf.GetCommitedLogs() {
+		// already commited in the log, then we don't have to perform again
+		if curCommitedLog.Command.(Op).Identifier == args.Identifier {
+			kv.mu.Unlock()
+			reply.Err = OK
+			return
+		}
+	}
+
+	// check if the put/append request is already commited in leader's log
+
 	// args.Op is either "Put" or "Append"
-	op := Op{args.Key, args.Value, args.Op, kv.counter}
+	op := Op{args.Key, args.Value, args.Op, kv.counter, args.Identifier}
 
 	kv.rf.Start(op)
 
