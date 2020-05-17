@@ -29,6 +29,7 @@ import (
 
 	"../labgob"
 	"../labrpc"
+	"github.com/sasha-s/go-deadlock"
 )
 
 // helper min function for comparing integers, return the smaller one
@@ -79,7 +80,7 @@ type LogStruct struct {
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        deadlock.Mutex      // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -118,6 +119,11 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Unlock()
 
 	return term, isleader
+}
+
+// should be locked outside to protect
+func (rf *Raft) GetCommitedLogs() []*LogStruct {
+	return rf.log[:rf.commitIndex]
 }
 
 // Helper function that prints out the log of the server,
@@ -238,8 +244,11 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 			// increment lastApplied
 			rf.lastApplied++
 			// apply log[lastApplied] to state machine
+
 			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied}
+			rf.mu.Unlock()
 			applyCh <- newMsg
+			rf.mu.Lock()
 		}
 		rf.mu.Unlock()
 

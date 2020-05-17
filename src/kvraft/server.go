@@ -1,10 +1,13 @@
 package kvraft
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sasha-s/go-deadlock"
 
 	"../labgob"
 	"../labrpc"
@@ -32,7 +35,7 @@ type Op struct {
 }
 
 type KVServer struct {
-	mu      sync.Mutex
+	mu      deadlock.Mutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
@@ -51,6 +54,7 @@ type KVServer struct {
 
 	// atomically increasing counter stores the order when each command is received
 	counter int
+	// commitedCounter int
 }
 
 // check if the corresponding raft instance is leader
@@ -71,7 +75,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	op := Op{args.Key, "", "Get", kv.counter, ""}
 
-	kv.rf.Start(op)
+	_, prevTerm, _ := kv.rf.Start(op)
 
 	// create the sync.cond variable
 	m := sync.Mutex{}
@@ -86,9 +90,20 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	condVar.L.Lock()
 	condVar.Wait()
 
-	// apply get
+	// if !kv.checkLeader() {
+	// 	reply.Err = ErrWrongLeader
+	// 	condVar.L.Unlock()
+	// 	return
+	// }
+	curTerm, isLeader := kv.rf.GetState()
+
 	kv.mu.Lock()
-	if val, ok := kv.keyValueMap[args.Key]; !ok {
+
+	// apply get
+
+	if !isLeader || curTerm != prevTerm {
+		reply.Err = ErrWrongLeader
+	} else if val, ok := kv.keyValueMap[args.Key]; !ok {
 		reply.Err = ErrNoKey
 	} else {
 		reply.Value = val
@@ -102,6 +117,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 // RPC handler for PutAppend
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
 	if !kv.checkLeader() {
 		reply.Err = ErrWrongLeader
 		return
@@ -124,7 +140,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// args.Op is either "Put" or "Append"
 	op := Op{args.Key, args.Value, args.Op, kv.counter, args.Identifier}
 
-	kv.rf.Start(op)
+	_, prevTerm, _ := kv.rf.Start(op)
 
 	// create the sync.cond variable
 	m := sync.Mutex{}
@@ -139,10 +155,22 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	condVar.L.Lock()
 	condVar.Wait()
 
-	// apply get
+	// if !kv.checkLeader() {
+	// 	reply.Err = ErrWrongLeader
+	// 	condVar.L.Unlock()
+	// 	return
+	// }
+
+	// apply put/Append
+	curTerm, isLeader := kv.rf.GetState()
+
 	kv.mu.Lock()
-	if args.Op == "Put" {
+
+	if !isLeader || curTerm != prevTerm {
+		reply.Err = ErrWrongLeader
+	} else if args.Op == "Put" {
 		kv.keyValueMap[args.Key] = args.Value
+		reply.Err = OK
 	} else {
 		// exist, append
 		if _, ok := kv.keyValueMap[args.Key]; ok {
@@ -151,9 +179,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			// doesn't exist, act like put
 			kv.keyValueMap[args.Key] = args.Value
 		}
+		reply.Err = OK
 	}
 
-	reply.Err = OK
+	fmt.Println("Server", kv.me, kv.keyValueMap)
 
 	condVar.L.Unlock()
 	kv.mu.Unlock()
@@ -163,6 +192,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // periodically check if any ApplyMsg is received from ApplyCh
 func (kv *KVServer) checkApply() {
 	for !kv.killed() {
+
 		select {
 		case applyMsg := <-kv.applyCh:
 			// type assertion here
@@ -171,10 +201,25 @@ func (kv *KVServer) checkApply() {
 			// if the index is found
 			if cond, ok := kv.applyCondOrderMap[applyMsgOrder]; ok {
 				cond.Signal()
+				delete(kv.applyCondOrderMap, applyMsgOrder)
 			}
 			kv.mu.Unlock()
 			time.Sleep(time.Millisecond * 10)
 		default:
+
+			// checkLeadership, if not leader anymore, any unsent RPC to client will
+			// be issued with leadershipFailure
+
+			// signal all
+			if !kv.checkLeader() {
+				kv.mu.Lock()
+				for order, cond := range kv.applyCondOrderMap {
+					cond.Signal()
+					delete(kv.applyCondOrderMap, order)
+				}
+				kv.mu.Unlock()
+			}
+
 			time.Sleep(time.Millisecond * 10)
 		}
 	}
@@ -235,6 +280,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	//
 	kv.counter = 0
+	// kv.commitedCounter = -1
 
 	//
 	kv.applyCondOrderMap = make(map[int]*sync.Cond)

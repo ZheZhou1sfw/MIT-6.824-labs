@@ -62,6 +62,8 @@ func (ck *Clerk) Get(key string) string {
 				if reply.Err == OK {
 					ck.lastKvServerLeader = kvServerIdx
 					return reply.Value
+				} else if reply.Err == ErrNoKey {
+					return ""
 				}
 			}
 		}
