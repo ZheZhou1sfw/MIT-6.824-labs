@@ -112,10 +112,10 @@ type Raft struct {
 // return currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
-	// rf.mu.Lock()
+	rf.mu.Lock()
 	term := rf.currentTerm
 	isleader := rf.isLeader
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 
 	return term, isleader
 }
@@ -238,7 +238,21 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 			// increment lastApplied
 			rf.lastApplied++
 			// apply log[lastApplied] to state machine
+
+			// //
+			// // DEBUG
+			// //
+			// fmt.Print(";;;;;", rf.me)
+			// for _, l := range rf.log {
+			// 	fmt.Print(l)
+			// }
+			// fmt.Println("")
+			// //
+			// //
+			// //
+			// fmt.Println("....", rf.me, rf.lastApplied, len(rf.log))
 			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied}
+
 			rf.mu.Unlock()
 			applyCh <- newMsg
 			rf.mu.Lock()

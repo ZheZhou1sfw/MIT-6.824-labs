@@ -47,7 +47,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	args := GetArgs{key}
+	args := GetArgs{key, GenerateRandomString(32)}
 	reply := GetReply{ErrNoKey, ""}
 	// try forever
 	for {
