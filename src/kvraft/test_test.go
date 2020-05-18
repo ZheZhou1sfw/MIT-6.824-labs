@@ -222,7 +222,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				}
 			}
 		})
-
+		fmt.Println("One")
 		if partitions {
 			// Allow the clients to perform some operations without interruption
 			time.Sleep(1 * time.Second)
@@ -232,7 +232,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
-
+		fmt.Println("Two")
 		if partitions {
 			// log.Printf("wait for partitioner\n")
 			<-ch_partitioner
@@ -244,7 +244,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
 		}
-
+		fmt.Println("Three")
 		if crash {
 			// log.Printf("shutdown servers\n")
 			for i := 0; i < nservers; i++ {
@@ -273,7 +273,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			v := Get(cfg, ck, key)
 			checkClntAppends(t, i, v, j)
 		}
-
+		fmt.Println("Four")
 		if maxraftstate > 0 {
 			// Check maximum after the servers have processed all client
 			// requests and had time to checkpoint.
@@ -448,20 +448,20 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 	}
 }
 
-// func TestBasic3A(t *testing.T) {
-// 	// Test: one client (3A) ...
-// 	GenericTest(t, "3A", 1, false, false, false, -1)
-// }
+func TestBasic3A(t *testing.T) {
+	// Test: one client (3A) ...
+	GenericTest(t, "3A", 1, false, false, false, -1)
+}
 
-// func TestConcurrent3A(t *testing.T) {
-// 	// Test: many clients (3A) ...
-// 	GenericTest(t, "3A", 5, false, false, false, -1)
-// }
+func TestConcurrent3A(t *testing.T) {
+	// Test: many clients (3A) ...
+	GenericTest(t, "3A", 5, false, false, false, -1)
+}
 
-// func TestUnreliable3A(t *testing.T) {
-// 	// Test: unreliable net, many clients (3A) ...
-// 	GenericTest(t, "3A", 5, true, false, false, -1)
-// }
+func TestUnreliable3A(t *testing.T) {
+	// Test: unreliable net, many clients (3A) ...
+	GenericTest(t, "3A", 5, true, false, false, -1)
+}
 
 func TestUnreliableOneKey3A(t *testing.T) {
 	const nservers = 3

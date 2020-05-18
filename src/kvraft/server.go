@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -27,11 +26,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Key        string
-	Value      string
-	Type       string
-	Order      int
-	Identifier string
+	Key   string
+	Value string
+	Type  string
+	Order int
+	// Identifier string
 }
 
 type KVServer struct {
@@ -52,9 +51,14 @@ type KVServer struct {
 	// the key represents the order that each command is received by the server
 	applyCondOrderMap map[int]*sync.Cond
 
+	// Timeout value that has order -> timeOutValue
+	timeoutMap map[int]time.Time
+
 	// atomically increasing counter stores the order when each command is received
 	counter int
-	// commitedCounter int
+
+	// seen identifiers map
+	identifiersMap map[string]bool
 }
 
 // check if the corresponding raft instance is leader
@@ -73,7 +77,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// form the command
 	kv.mu.Lock()
-	op := Op{args.Key, "", "Get", kv.counter, ""}
+	// op := Op{args.Key, "", "Get", kv.counter, ""}
+	op := Op{args.Key, "", "Get", kv.counter}
 
 	_, prevTerm, _ := kv.rf.Start(op)
 
@@ -82,6 +87,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	condVar := sync.NewCond(&m)
 
 	kv.applyCondOrderMap[kv.counter] = condVar
+	kv.timeoutMap[kv.counter] = time.Now()
+	saveCounter := kv.counter
 
 	kv.counter++
 	kv.mu.Unlock()
@@ -101,7 +108,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// apply get
 
-	if !isLeader || curTerm != prevTerm {
+	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[saveCounter]) > time.Millisecond*1000 {
 		reply.Err = ErrWrongLeader
 	} else if val, ok := kv.keyValueMap[args.Key]; !ok {
 		reply.Err = ErrNoKey
@@ -109,6 +116,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Value = val
 		reply.Err = OK
 	}
+
+	// fmt.Println("Get Server", kv.me)
 
 	condVar.L.Unlock()
 	kv.mu.Unlock()
@@ -126,19 +135,26 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// form the command
 	kv.mu.Lock()
 
-	for _, curCommitedLog := range kv.rf.GetCommitedLogs() {
-		// already commited in the log, then we don't have to perform again
-		if curCommitedLog.Command.(Op).Identifier == args.Identifier {
-			kv.mu.Unlock()
-			reply.Err = OK
-			return
-		}
+	// for _, curCommitedLog := range kv.rf.GetCommitedLogs() {
+	// 	// already commited in the log, then we don't have to perform again
+	// 	if curCommitedLog.Command.(Op).Identifier == args.Identifier {
+	// 		kv.mu.Unlock()
+	// 		reply.Err = OK
+	// 		return
+	// 	}
+	// }
+	if _, ok := kv.identifiersMap[args.Identifier]; ok {
+		kv.mu.Unlock()
+		reply.Err = OK
+		return
 	}
+	kv.identifiersMap[args.Identifier] = true
 
 	// check if the put/append request is already commited in leader's log
 
 	// args.Op is either "Put" or "Append"
-	op := Op{args.Key, args.Value, args.Op, kv.counter, args.Identifier}
+	// op := Op{args.Key, args.Value, args.Op, kv.counter, args.Identifier}
+	op := Op{args.Key, args.Value, args.Op, kv.counter}
 
 	_, prevTerm, _ := kv.rf.Start(op)
 
@@ -147,8 +163,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	condVar := sync.NewCond(&m)
 
 	kv.applyCondOrderMap[kv.counter] = condVar
+	// add timeout starts
+	kv.timeoutMap[kv.counter] = time.Now()
 
+	saveCounter := kv.counter
 	kv.counter++
+
 	kv.mu.Unlock()
 
 	// wait for condVar
@@ -162,27 +182,36 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// }
 
 	// apply put/Append
+
+	//
 	curTerm, isLeader := kv.rf.GetState()
 
 	kv.mu.Lock()
 
-	if !isLeader || curTerm != prevTerm {
+	// if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[saveCounter]) > time.Millisecond*1000 {
+	// 	reply.Err = ErrWrongLeader
+	// } else if args.Op == "Put" {
+	// 	kv.keyValueMap[args.Key] = args.Value
+	// 	reply.Err = OK
+	// } else {
+	// 	// exist, append
+	// 	if _, ok := kv.keyValueMap[args.Key]; ok {
+	// 		kv.keyValueMap[args.Key] = kv.keyValueMap[args.Key] + args.Value // append
+	// 	} else {
+	// 		// doesn't exist, act like put
+	// 		kv.keyValueMap[args.Key] = args.Value
+	// 	}
+	// 	reply.Err = OK
+	// }
+
+	// only deals with sending RPC
+	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[saveCounter]) > time.Millisecond*1000 {
 		reply.Err = ErrWrongLeader
-	} else if args.Op == "Put" {
-		kv.keyValueMap[args.Key] = args.Value
-		reply.Err = OK
 	} else {
-		// exist, append
-		if _, ok := kv.keyValueMap[args.Key]; ok {
-			kv.keyValueMap[args.Key] = kv.keyValueMap[args.Key] + args.Value // append
-		} else {
-			// doesn't exist, act like put
-			kv.keyValueMap[args.Key] = args.Value
-		}
 		reply.Err = OK
 	}
 
-	fmt.Println("Server", kv.me, kv.keyValueMap)
+	// fmt.Println("Server", *args, kv.me, kv.keyValueMap)
 
 	condVar.L.Unlock()
 	kv.mu.Unlock()
@@ -201,24 +230,40 @@ func (kv *KVServer) checkApply() {
 			// if the index is found
 			if cond, ok := kv.applyCondOrderMap[applyMsgOrder]; ok {
 				cond.Signal()
-				delete(kv.applyCondOrderMap, applyMsgOrder)
+
+				// delete(kv.applyCondOrderMap, applyMsgOrder)
 			}
+
+			// if put/append, needs to update kv_table
+			theOpStruct := applyMsg.Command.(Op)
+			if theOpStruct.Type == "Put" {
+				kv.keyValueMap[theOpStruct.Key] = theOpStruct.Value
+			} else if applyMsg.Command.(Op).Type == "Append" {
+				// exist, append
+				if _, ok := kv.keyValueMap[theOpStruct.Key]; ok {
+					kv.keyValueMap[theOpStruct.Key] = kv.keyValueMap[theOpStruct.Key] + theOpStruct.Value // append
+				} else {
+					// doesn't exist, act like put
+					kv.keyValueMap[theOpStruct.Key] = theOpStruct.Value
+				}
+			}
+
 			kv.mu.Unlock()
-			time.Sleep(time.Millisecond * 10)
+			// time.Sleep(time.Millisecond * 10)
 		default:
 
-			// checkLeadership, if not leader anymore, any unsent RPC to client will
-			// be issued with leadershipFailure
-
-			// signal all
-			if !kv.checkLeader() {
-				kv.mu.Lock()
-				for order, cond := range kv.applyCondOrderMap {
+			// checktime outs below:
+			kv.mu.Lock()
+			for order, startTime := range kv.timeoutMap {
+				if time.Now().Sub(startTime) > time.Millisecond*1000 {
+					cond := kv.applyCondOrderMap[order]
 					cond.Signal()
-					delete(kv.applyCondOrderMap, order)
+					// delete(kv.applyCondOrderMap, order)
+					// delete(kv.timeoutMap, order)
 				}
-				kv.mu.Unlock()
 			}
+
+			kv.mu.Unlock()
 
 			time.Sleep(time.Millisecond * 10)
 		}
@@ -277,13 +322,15 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 
 	kv.keyValueMap = make(map[string]string)
-
+	kv.timeoutMap = make(map[int]time.Time)
 	//
 	kv.counter = 0
 	// kv.commitedCounter = -1
 
 	//
 	kv.applyCondOrderMap = make(map[int]*sync.Cond)
+
+	kv.identifiersMap = make(map[string]bool)
 
 	// a dedicated goroutine runs checkApply
 	go func() { kv.checkApply() }()
