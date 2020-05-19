@@ -111,7 +111,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// apply get
 
-	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*2000 {
+	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1000 {
 		reply.Err = ErrWrongLeader
 		delete(kv.applyIdentifierMap, args.Identifier)
 		delete(kv.timeoutMap, args.Identifier)
@@ -218,7 +218,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// }
 
 	// only deals with sending RPC
-	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*2000 {
+	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1000 {
 		reply.Err = ErrWrongLeader
 		delete(kv.applyIdentifierMap, args.Identifier)
 		delete(kv.timeoutMap, args.Identifier)
@@ -284,7 +284,7 @@ func (kv *KVServer) checkApply() {
 			// checktime outs below:
 			kv.mu.Lock()
 			for id, startTime := range kv.timeoutMap {
-				if time.Now().Sub(startTime) > time.Millisecond*2000 {
+				if time.Now().Sub(startTime) > time.Millisecond*1000 {
 					// cond := kv.applyCondOrderMap[order]
 					cond := kv.applyIdentifierMap[id]
 					cond.Signal()

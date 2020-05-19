@@ -2,7 +2,6 @@ package kvraft
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
 
 	"../labrpc"
@@ -56,7 +55,7 @@ func (ck *Clerk) Get(key string) string {
 			kvserver := ck.servers[kvServerIdx]
 			ok := kvserver.Call("KVServer.Get", &args, &reply)
 			if !ok {
-				fmt.Println("RPC 'GET' failed")
+				// fmt.Println("RPC 'GET' failed")
 			} else {
 				// if successful
 				if reply.Err == OK {
@@ -91,7 +90,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			kvserver := ck.servers[kvServerIdx]
 			ok := kvserver.Call("KVServer.PutAppend", &args, &reply)
 			if !ok {
-				fmt.Println("RPC '", op, "' failed")
+				// fmt.Println("RPC '", op, "' failed")
 			} else {
 				// if successful
 				if reply.Err == OK {
