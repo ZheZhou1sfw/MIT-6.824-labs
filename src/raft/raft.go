@@ -172,7 +172,7 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 		}
 	} else if key == "leader" {
 		rf.isLeader = true
-		fmt.Printf("new leader is ID %v with term %v \n", rf.me, rf.currentTerm)
+		// fmt.Printf("new leader is ID %v with term %v \n", rf.me, rf.currentTerm)
 		// initialize nextIndex[] and matchIndex[]
 		for i := 0; i < len(rf.peers); i++ {
 			rf.nextIndex[i] = len(rf.log) + 1
@@ -238,8 +238,24 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 			// increment lastApplied
 			rf.lastApplied++
 			// apply log[lastApplied] to state machine
+
+			// //
+			// // DEBUG
+			// //
+			// fmt.Print(";;;;;", rf.me)
+			// for _, l := range rf.log {
+			// 	fmt.Print(l)
+			// }
+			// fmt.Println("")
+			// //
+			// //
+			// //
+			// fmt.Println("....", rf.me, rf.lastApplied, rf.commitIndex, len(rf.log), time.Now().UnixNano())
 			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied}
+
+			rf.mu.Unlock()
 			applyCh <- newMsg
+			rf.mu.Lock()
 		}
 		rf.mu.Unlock()
 
@@ -388,15 +404,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 			if rf.log[toInsertIndex-1].Term != args.LogEntries[i-1].Term {
+				// fmt.Println("dddddd", rf.me, rf.isLeader, len(rf.log), toInsertIndex, i, rf.log[toInsertIndex-1], args.LogEntries[i-1])
 				rf.log = rf.log[:toInsertIndex-1]
 				rf.persist()
 				break
 			}
 		}
 		// Append any new entries not already in the log
+		// fmt.Println("apppppp", rf.me, rf.isLeader, args.PrevLogIndex, i, len(rf.log), len(args.LogEntries))
 		rf.log = append(rf.log[:args.PrevLogIndex+i-1], args.LogEntries[i-1:]...)
 		rf.persist()
 		if args.LeaderCommit > rf.commitIndex {
+			// fmt.Println("<<<<<<", rf.me, rf.isLeader, rf.commitIndex, args.LeaderCommit, args.PrevLogIndex, len(args.LogEntries), len(rf.log), time.Now().UnixNano())
 			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.LogEntries))
 			// follower signal commit
 			if rf.commitIndex > rf.lastApplied {
@@ -495,6 +514,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = targetCommitIndex
 	term = rf.currentTerm
 
+	// go func() { rf.broadcastEntries(false) }()
+
 	// Should return immediately
 	rf.mu.Unlock()
 
@@ -551,26 +572,27 @@ func (rf *Raft) heartBeats() {
 
 		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 		rf.mu.Lock()
-		lastLogIndex := len(rf.log)
-		f := false
-		for i := 0; i < len(rf.peers); i++ {
-			if i == rf.me {
-				continue
-			}
-			if rf.nextIndex[i] <= lastLogIndex {
-				f = true
-				go func() { rf.broadcastEntries(false) }()
-				break
-			}
-		}
+		// lastLogIndex := len(rf.log)
+		// f := false
+		// for i := 0; i < len(rf.peers); i++ {
+		// 	if i == rf.me {
+		// 		continue
+		// 	}
+		// 	if rf.nextIndex[i] <= lastLogIndex {
+		// 		f = true
+		// 		go func() { rf.broadcastEntries(false) }()
+		// 		break
+		// 	}
+		// }
 		// if not sending appendentries, then do normal heartbeats
-		if !f {
-			go func() { rf.broadcastEntries(true) }()
-		}
+		// if !f {
+		// 	go func() { rf.broadcastEntries(true) }()
+		// }
+		go func() { rf.broadcastEntries() }()
 		// rf.printLog()
 		rf.mu.Unlock()
 		// sleep for a while. Limit 10 heartbeats per second
-		time.Sleep(time.Millisecond * 120)
+		time.Sleep(time.Millisecond * 150)
 		rf.mu.Lock()
 		stillLeader = rf.isLeader
 		rf.mu.Unlock()
@@ -580,7 +602,7 @@ func (rf *Raft) heartBeats() {
 // This function sends append entries to clients and wait for it to be done.
 // This requires to be done by a goroutine.
 // heartbeats() and updateFollowerLogs() would all dispatch a goroutine to call this function
-func (rf *Raft) broadcastEntries(isHeartBeat bool) {
+func (rf *Raft) broadcastEntries() {
 	// debug message
 	// fmt.Println("Message from leader ", rf.me, " match index: ", rf.matchIndex, " nextIndex: ", rf.nextIndex)
 	wg := sync.WaitGroup{}
@@ -607,7 +629,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				nextIndex := rf.nextIndex[targetID]
 
 				prevLogIndex := nextIndex - 1
-
+				// fmt.Println("ppppLog", rf.me, rf.isLeader, rf.nextIndex, prevLogIndex)
 				// last log term
 				prevLogTerm := -1
 				if prevLogIndex > 0 {
@@ -619,7 +641,8 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 				logs := []*LogStruct{}
 
 				// when heartbeats, send empty log, else send non-empty logs
-				if !isHeartBeat && len(rf.log) > 0 {
+				// if !isHeartBeat && len(rf.log) > 0 {
+				if len(rf.log) > 0 {
 					logs = rf.log[nextIndex-1:]
 				}
 				// save term
@@ -665,6 +688,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						// we put matchIndex to be the length of current log and nextIndex to be matchIndex + 1
 						rf.matchIndex[targetID] = prevLogIndex + len(logs)
 						rf.nextIndex[targetID] = rf.matchIndex[targetID] + 1
+						// fmt.Println("iiiiidex", rf.me, rf.isLeader, rf.nextIndex, prevLogIndex, len(logs))
 						rf.mu.Unlock()
 					} else if reply.Term > rf.currentTerm { // if the follower has a higher term than the leader, the leader should convert to follower
 						rf.updateState("follower", reply.Term)
@@ -675,6 +699,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						// because of log inconsistency, decrement nextIndex and retry
 						if reply.ConflictingTerm == -1 {
 							rf.nextIndex[targetID] = reply.IndexOfConflict
+							// fmt.Println("ccccconflict111", rf.me, rf.isLeader, rf.nextIndex)
 						} else {
 							// advanced skip nextIndex
 							// search for last entry of the log that has conflicting term
@@ -689,6 +714,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 								target = reply.IndexOfConflict
 							}
 							rf.nextIndex[targetID] = target
+							// fmt.Println("ccccconflict222", rf.me, rf.isLeader, rf.nextIndex)
 						}
 						rf.mu.Unlock()
 					}
@@ -713,6 +739,7 @@ func (rf *Raft) broadcastEntries(isHeartBeat bool) {
 						sum += m[mIdx]
 					}
 					if sum > len(rf.peers)/2 && rf.log[mIdx-1].Term == rf.currentTerm {
+						// fmt.Println("-----", rf.me, rf.isLeader, rf.currentTerm, rf.matchIndex, len(rf.log))
 						rf.commitIndex = mIdx
 						break
 					}

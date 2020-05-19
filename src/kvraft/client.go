@@ -1,13 +1,18 @@
 package kvraft
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
 
+	"../labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+
+	// last kvserver that Clerk remembers to be the leader
+	lastKvServerLeader int
 }
 
 func nrand() int64 {
@@ -21,6 +26,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.lastKvServerLeader = 0
+
 	return ck
 }
 
@@ -39,7 +46,27 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := GetArgs{key, GenerateRandomString(32)}
+	reply := GetReply{ErrNoKey, ""}
+	// try forever
+	for {
+		for i := 0; i < len(ck.servers); i++ {
+			kvServerIdx := (i + ck.lastKvServerLeader) % len(ck.servers)
+			kvserver := ck.servers[kvServerIdx]
+			ok := kvserver.Call("KVServer.Get", &args, &reply)
+			if !ok {
+				// fmt.Println("RPC 'GET' failed")
+			} else {
+				// if successful
+				if reply.Err == OK {
+					ck.lastKvServerLeader = kvServerIdx
+					return reply.Value
+				} else if reply.Err == ErrNoKey {
+					return ""
+				}
+			}
+		}
+	}
 }
 
 //
@@ -54,6 +81,25 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{key, value, op, GenerateRandomString(32)}
+	reply := PutAppendReply{ErrNoKey}
+	// try forever
+	for {
+		for i := 0; i < len(ck.servers); i++ {
+			kvServerIdx := (i + ck.lastKvServerLeader) % len(ck.servers)
+			kvserver := ck.servers[kvServerIdx]
+			ok := kvserver.Call("KVServer.PutAppend", &args, &reply)
+			if !ok {
+				// fmt.Println("RPC '", op, "' failed")
+			} else {
+				// if successful
+				if reply.Err == OK {
+					ck.lastKvServerLeader = kvServerIdx
+					return
+				}
+			}
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
