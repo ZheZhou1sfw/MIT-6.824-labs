@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -49,14 +50,10 @@ type KVServer struct {
 
 	// the applyCond map that the dedicated applyCh check will signal.
 	// the key represents the identifier that each command is received by the server
-	// applyCondOrderMap map[int]*sync.Cond
 	applyIdentifierMap map[string]*sync.Cond
 
 	// Timeout value that has identifier -> timeOutValue
 	timeoutMap map[string]time.Time
-
-	// atomically increasing counter stores the order when each command is received
-	// counter int
 
 	// seen identifiers map
 	identifiersMap map[string]bool
@@ -78,7 +75,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// form the command
 	kv.mu.Lock()
-	// op := Op{args.Key, "", "Get", kv.counter, ""}
 	op := Op{args.Key, "", "Get", args.Identifier}
 
 	_, prevTerm, _ := kv.rf.Start(op)
@@ -87,24 +83,15 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	m := sync.Mutex{}
 	condVar := sync.NewCond(&m)
 
-	// kv.applyCondOrderMap[kv.counter] = condVar
 	kv.applyIdentifierMap[args.Identifier] = condVar
-	// kv.timeoutMap[kv.counter] = time.Now()
 	kv.timeoutMap[args.Identifier] = time.Now()
-	// saveCounter := kv.counter
 
-	// kv.counter++
 	kv.mu.Unlock()
 
 	// wait for condVar
 	condVar.L.Lock()
 	condVar.Wait()
 
-	// if !kv.checkLeader() {
-	// 	reply.Err = ErrWrongLeader
-	// 	condVar.L.Unlock()
-	// 	return
-	// }
 	curTerm, isLeader := kv.rf.GetState()
 
 	kv.mu.Lock()
@@ -140,32 +127,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// form the command
 	kv.mu.Lock()
 
-	// for _, curCommitedLog := range kv.rf.GetCommitedLogs() {
-	// 	// already commited in the log, then we don't have to perform again
-	// 	if curCommitedLog.Command.(Op).Identifier == args.Identifier {
-	// 		kv.mu.Unlock()
-	// 		reply.Err = OK
-	// 		return
-	// 	}
-	// }
-
-	//
-	//
-	//
-	// if _, ok := kv.identifiersMap[args.Identifier]; ok {
-	// 	kv.mu.Unlock()
-	// 	reply.Err = OK
-	// 	return
-	// }
-	// kv.identifiersMap[args.Identifier] = true
-	//
-	//
-	//
-
 	// check if the put/append request is already commited in leader's log
 
 	// args.Op is either "Put" or "Append"
-	// op := Op{args.Key, args.Value, args.Op, kv.counter, args.Identifier}
 	op := Op{args.Key, args.Value, args.Op, args.Identifier}
 
 	_, prevTerm, _ := kv.rf.Start(op)
@@ -174,13 +138,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	m := sync.Mutex{}
 	condVar := sync.NewCond(&m)
 
-	// kv.applyCondOrderMap[kv.counter] = condVar
 	kv.applyIdentifierMap[args.Identifier] = condVar
-	// kv.timeoutMap[kv.counter] = time.Now()
 	kv.timeoutMap[args.Identifier] = time.Now()
-
-	// saveCounter := kv.counter
-	// kv.counter++
 
 	kv.mu.Unlock()
 
@@ -188,34 +147,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	condVar.L.Lock()
 	condVar.Wait()
 
-	// if !kv.checkLeader() {
-	// 	reply.Err = ErrWrongLeader
-	// 	condVar.L.Unlock()
-	// 	return
-	// }
-
-	// apply put/Append
-
-	//
 	curTerm, isLeader := kv.rf.GetState()
 
 	kv.mu.Lock()
-
-	// if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[saveCounter]) > time.Millisecond*1000 {
-	// 	reply.Err = ErrWrongLeader
-	// } else if args.Op == "Put" {
-	// 	kv.keyValueMap[args.Key] = args.Value
-	// 	reply.Err = OK
-	// } else {
-	// 	// exist, append
-	// 	if _, ok := kv.keyValueMap[args.Key]; ok {
-	// 		kv.keyValueMap[args.Key] = kv.keyValueMap[args.Key] + args.Value // append
-	// 	} else {
-	// 		// doesn't exist, act like put
-	// 		kv.keyValueMap[args.Key] = args.Value
-	// 	}
-	// 	reply.Err = OK
-	// }
 
 	// only deals with sending RPC
 	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1000 {
@@ -225,8 +159,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	} else {
 		reply.Err = OK
 	}
-
-	// fmt.Println("Server", *args, kv.me, kv.keyValueMap)
 
 	condVar.L.Unlock()
 	kv.mu.Unlock()
@@ -239,13 +171,17 @@ func (kv *KVServer) checkApply() {
 		select {
 		case applyMsg := <-kv.applyCh:
 			// type assertion here
-			// applyMsgOrder := applyMsg.Command.(Op).Order
 			kv.mu.Lock()
-			// if the index is found
-			// if cond, ok := kv.applyCondOrderMap[applyMsgOrder]; ok {
-			theOpStruct := applyMsg.Command.(Op)
+			// if it's a snapshot message:
+			if !applyMsg.CommandValid && applyMsg.CommandType == "snapshot" {
+				kv.keyValueMap = applyMsg.Command.(SnapshotComplex).KeyValueMap
+				kv.identifiersMap = applyMsg.Command.(SnapshotComplex).IdentifiersMap
+				kv.mu.Unlock()
+				continue
+			}
 
-			// }
+			// if the index is found
+			theOpStruct := applyMsg.Command.(Op)
 			if _, ok := kv.identifiersMap[theOpStruct.Identifier]; !ok {
 				if theOpStruct.Type == "Put" {
 					kv.keyValueMap[theOpStruct.Key] = theOpStruct.Value
@@ -253,7 +189,6 @@ func (kv *KVServer) checkApply() {
 					// exist, append
 					if _, ok := kv.keyValueMap[theOpStruct.Key]; ok {
 						kv.keyValueMap[theOpStruct.Key] = kv.keyValueMap[theOpStruct.Key] + theOpStruct.Value // append
-						// fmt.Println("??????Appending", kv.me, kv.keyValueMap)
 					} else {
 						// doesn't exist, act like put
 						kv.keyValueMap[theOpStruct.Key] = theOpStruct.Value
@@ -264,40 +199,49 @@ func (kv *KVServer) checkApply() {
 			kv.identifiersMap[theOpStruct.Identifier] = true
 			if cond, ok := kv.applyIdentifierMap[theOpStruct.Identifier]; ok {
 				cond.Signal()
-				// delete(kv.applyIdentifierMap, theOpStruct.Identifier)
-				// delete(kv.timeoutMap, theOpStruct.Identifier)
 			}
 
-			// if put/append, needs to update kv_table
-
-			// fmt.Println("!!!!!", kv.me, applyMsg)
-			// if theOpStruct.Type != "Get" {
-			// 	if _, ok := kv.identifiersMap[theOpStruct.Identifier]; ok {
-			// 		kv.mu.Unlock()
-			// 		continue
-			// 	}
-
 			kv.mu.Unlock()
-			// time.Sleep(time.Millisecond * 10)
+			kv.trySnapShot()
 		default:
 
 			// checktime outs below:
 			kv.mu.Lock()
 			for id, startTime := range kv.timeoutMap {
 				if time.Now().Sub(startTime) > time.Millisecond*1000 {
-					// cond := kv.applyCondOrderMap[order]
 					cond := kv.applyIdentifierMap[id]
 					cond.Signal()
-					// delete(kv.applyCondOrderMap, order)
-					// delete(kv.timeoutMap, order)
 
 				}
 			}
 
 			kv.mu.Unlock()
-
+			kv.trySnapShot()
 			time.Sleep(time.Millisecond * 10)
 		}
+	}
+}
+
+// try snapshot, if can't just return, else snapshot
+// this should be run by the checkApply goroutine
+func (kv *KVServer) trySnapShot() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// when maxraftstate is -1, snapshot is not required
+	if kv.maxraftstate != -1 && kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
+		// communicate with raft to get the metadata
+		lastIncludedIndex, lastIncludedTerm := kv.rf.GetLastAppliedMeta()
+
+		snapshotStruct := SnapshotComplex{kv.keyValueMap, kv.identifiersMap}
+
+		w := new(bytes.Buffer)
+		e := labgob.NewEncoder(w)
+		e.Encode(lastIncludedIndex)
+		e.Encode(lastIncludedTerm)
+		e.Encode(snapshotStruct)
+		snapshotData := w.Bytes()
+		kv.rf.PersistSnapshot(snapshotData)
 	}
 }
 
@@ -354,12 +298,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.keyValueMap = make(map[string]string)
 	kv.timeoutMap = make(map[string]time.Time)
-	//
-	// kv.counter = 0
-	// kv.commitedCounter = -1
 
-	//
-	// kv.applyCondOrderMap = make(map[int]*sync.Cond)
 	kv.applyIdentifierMap = make(map[string]*sync.Cond)
 
 	kv.identifiersMap = make(map[string]bool)

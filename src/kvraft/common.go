@@ -12,6 +12,12 @@ const (
 	ErrWrongLeader = "ErrWrongLeader"
 )
 
+// a helper struct that helps the data comprehension during snapshot
+type SnapshotComplex struct {
+	KeyValueMap    map[string]string
+	IdentifiersMap map[string]bool
+}
+
 type Err string
 
 // Put or Append

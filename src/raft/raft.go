@@ -20,7 +20,6 @@ package raft
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -63,6 +62,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandType  string // currently only "snapshot" is used
 }
 
 //
@@ -81,7 +81,7 @@ type LogStruct struct {
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
+	Persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
@@ -107,6 +107,12 @@ type Raft struct {
 
 	// condition variable sync.Cond for triggering applyCommited
 	applyCond *sync.Cond
+
+	// snapshot variable for log compaction
+	lastIncludedIndex int
+	lastIncludedTerm  int
+	snapshotState     interface{}
+	snapshotSent      bool
 }
 
 // return currentTerm and whether this server believes it is the leader.
@@ -118,6 +124,16 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Unlock()
 
 	return term, isleader
+}
+
+// return last applied index and term
+func (rf *Raft) GetLastAppliedMeta() (int, int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	lastIncludedIndex := rf.lastApplied
+	lastIncludedTerm := rf.log[rf.lastApplied-1].Term
+
+	return lastIncludedIndex, lastIncludedTerm
 }
 
 // Helper function that prints out the log of the server,
@@ -191,6 +207,10 @@ func (rf *Raft) updateState(state string, targetTerm int) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
+	rf.Persister.SaveRaftState(rf.getRaftStateData())
+}
+
+func (rf *Raft) getRaftStateData() []byte {
 	// Your code here (2C).
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
@@ -198,7 +218,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	return data
 }
 
 //
@@ -217,11 +237,46 @@ func (rf *Raft) readPersist(data []byte) {
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
 		d.Decode(&logs) != nil {
-		log.Fatal("decode error")
+		// log.Fatal("decode error")
+		fmt.Println("read snapshot doesn't exist")
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor // represent nil
 		rf.log = logs
+	}
+}
+
+// called by kvserver (outside), that's why lock is required
+// should discard log here as well !!!!!
+func (rf *Raft) PersistSnapshot(snapshotData []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	data := rf.getRaftStateData()
+	rf.Persister.SaveStateAndSnapshot(data, snapshotData)
+}
+
+func (rf *Raft) readSnapshot() {
+	snapshotData := rf.Persister.ReadSnapshot()
+	r := bytes.NewBuffer(snapshotData)
+	d := labgob.NewDecoder(r)
+	var lastIncludedIndex int
+	var lastIncludedTerm int
+	// var includedKeyValueMap map[string]string
+	// var identifiersMap map[string]bool
+	var snapshotComplex SnapshotComplex
+
+	if d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil ||
+		// d.Decode(&includedKeyValueMap) != nil ||
+		// d.Decode(&identifiersMap) != nil {
+		d.Decode(&snapshotComplex) != nil {
+		// log.Fatal("decode error")
+		rf.snapshotSent = true // doesn't need to send
+	} else {
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.snapshotState = snapshotComplex
 	}
 }
 
@@ -234,28 +289,25 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 		rf.applyCond.Wait()
 		// ready to apply command
 		rf.mu.Lock()
-		for rf.commitIndex > rf.lastApplied {
-			// increment lastApplied
-			rf.lastApplied++
-			// apply log[lastApplied] to state machine
-
-			// //
-			// // DEBUG
-			// //
-			// fmt.Print(";;;;;", rf.me)
-			// for _, l := range rf.log {
-			// 	fmt.Print(l)
-			// }
-			// fmt.Println("")
-			// //
-			// //
-			// //
-			// fmt.Println("....", rf.me, rf.lastApplied, rf.commitIndex, len(rf.log), time.Now().UnixNano())
-			newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied}
-
+		// term outdated, should send snapshot to server
+		if !rf.snapshotSent {
+			newMsg := ApplyMsg{false, rf.snapshotState, 0, "snapshot"}
+			rf.snapshotSent = true
 			rf.mu.Unlock()
 			applyCh <- newMsg
 			rf.mu.Lock()
+		} else {
+			for rf.commitIndex > rf.lastApplied {
+				// increment lastApplied
+				rf.lastApplied++
+				// apply log[lastApplied] to state machine
+
+				newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1].Command, rf.lastApplied, "normal"}
+
+				rf.mu.Unlock()
+				applyCh <- newMsg
+				rf.mu.Lock()
+			}
 		}
 		rf.mu.Unlock()
 
@@ -887,7 +939,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
-	rf.persister = persister
+	rf.Persister = persister
 	rf.me = me
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -910,10 +962,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	m := sync.Mutex{}
 	rf.applyCond = sync.NewCond(&m)
 
-	// timer parameters
+	// initialize snapshot variable
+	rf.lastIncludedIndex = 0
+	rf.lastIncludedTerm = -1
+	rf.snapshotState = nil
+	rf.snapshotSent = false
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// read snapshot if exist
+	rf.readSnapshot()
 
 	// initialize timer
 	rf.resetTimer()
