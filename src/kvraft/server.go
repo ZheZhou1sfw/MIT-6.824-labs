@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -152,7 +153,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 
 	// only deals with sending RPC
-	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1000 {
+	fmt.Println(";;;;", kv.me, isLeader, curTerm, prevTerm, time.Now().Sub(kv.timeoutMap[args.Identifier]))
+	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1500 {
 		reply.Err = ErrWrongLeader
 		delete(kv.applyIdentifierMap, args.Identifier)
 		delete(kv.timeoutMap, args.Identifier)
@@ -208,7 +210,7 @@ func (kv *KVServer) checkApply() {
 			// checktime outs below:
 			kv.mu.Lock()
 			for id, startTime := range kv.timeoutMap {
-				if time.Now().Sub(startTime) > time.Millisecond*1000 {
+				if time.Now().Sub(startTime) > time.Millisecond*1500 {
 					cond := kv.applyIdentifierMap[id]
 					cond.Signal()
 
@@ -216,7 +218,7 @@ func (kv *KVServer) checkApply() {
 			}
 
 			kv.mu.Unlock()
-			kv.trySnapShot()
+			// kv.trySnapShot()
 			time.Sleep(time.Millisecond * 10)
 		}
 	}
@@ -231,6 +233,7 @@ func (kv *KVServer) trySnapShot() {
 	// when maxraftstate is -1, snapshot is not required
 	if kv.maxraftstate != -1 && kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
 		// communicate with raft to get the metadata
+		fmt.Println("snapshot")
 		lastIncludedIndex, lastIncludedTerm := kv.rf.GetLastAppliedMeta()
 
 		snapshotStruct := SnapshotComplex{kv.keyValueMap, kv.identifiersMap}
@@ -241,7 +244,7 @@ func (kv *KVServer) trySnapShot() {
 		e.Encode(lastIncludedTerm)
 		e.Encode(snapshotStruct)
 		snapshotData := w.Bytes()
-		kv.rf.PersistSnapshot(snapshotData)
+		kv.rf.PersistSnapshot(snapshotData, lastIncludedIndex)
 	}
 }
 

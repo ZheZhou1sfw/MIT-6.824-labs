@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 
 	"../labrpc"
@@ -85,6 +86,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{ErrNoKey}
 	// try forever
 	for {
+		fmt.Println("putAppendClient", key, value, op)
 		for i := 0; i < len(ck.servers); i++ {
 			kvServerIdx := (i + ck.lastKvServerLeader) % len(ck.servers)
 			kvserver := ck.servers[kvServerIdx]
@@ -99,6 +101,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 			}
 		}
+		fmt.Println("End putappend", key, value, op)
 	}
 }
 

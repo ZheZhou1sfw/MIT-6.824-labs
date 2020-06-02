@@ -631,18 +631,20 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	Put(cfg, ck, "a", "A")
 	check(cfg, t, ck, "a", "A")
-
+	fmt.Println("Zero")
 	// a bunch of puts into the majority partition.
 	cfg.partition([]int{0, 1}, []int{2})
 	{
 		ck1 := cfg.makeClient([]int{0, 1})
 		for i := 0; i < 50; i++ {
 			Put(cfg, ck1, strconv.Itoa(i), strconv.Itoa(i))
+			fmt.Println("TTTT", i)
 		}
+		fmt.Println("Half")
 		time.Sleep(electionTimeout)
 		Put(cfg, ck1, "b", "B")
 	}
-
+	fmt.Println("One")
 	// check that the majority partition has thrown away
 	// most of its log entries.
 	sz := cfg.LogSize()
@@ -662,7 +664,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 		check(cfg, t, ck1, "1", "1")
 		check(cfg, t, ck1, "49", "49")
 	}
-
+	fmt.Println("Two")
 	// now everybody
 	cfg.partition([]int{0, 1, 2}, []int{})
 
