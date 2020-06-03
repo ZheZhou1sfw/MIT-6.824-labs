@@ -638,7 +638,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 		ck1 := cfg.makeClient([]int{0, 1})
 		for i := 0; i < 50; i++ {
 			Put(cfg, ck1, strconv.Itoa(i), strconv.Itoa(i))
-			fmt.Println("TTTT", i)
+			// fmt.Println("TTTT", i)
 		}
 		fmt.Println("Half")
 		time.Sleep(electionTimeout)

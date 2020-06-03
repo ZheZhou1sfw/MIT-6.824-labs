@@ -153,7 +153,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 
 	// only deals with sending RPC
-	fmt.Println(";;;;", kv.me, isLeader, curTerm, prevTerm, time.Now().Sub(kv.timeoutMap[args.Identifier]))
+	// fmt.Println(";;;;", kv.me, isLeader, curTerm, prevTerm, time.Now().Sub(kv.timeoutMap[args.Identifier]))
 	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1500 {
 		reply.Err = ErrWrongLeader
 		delete(kv.applyIdentifierMap, args.Identifier)
@@ -176,8 +176,8 @@ func (kv *KVServer) checkApply() {
 			kv.mu.Lock()
 			// if it's a snapshot message:
 			if !applyMsg.CommandValid && applyMsg.CommandType == "snapshot" {
-				kv.keyValueMap = applyMsg.Command.(SnapshotComplex).KeyValueMap
-				kv.identifiersMap = applyMsg.Command.(SnapshotComplex).IdentifiersMap
+				kv.keyValueMap = applyMsg.Command.(raft.SnapshotComplex).KeyValueMap
+				kv.identifiersMap = applyMsg.Command.(raft.SnapshotComplex).IdentifiersMap
 				kv.mu.Unlock()
 				continue
 			}
@@ -213,7 +213,6 @@ func (kv *KVServer) checkApply() {
 				if time.Now().Sub(startTime) > time.Millisecond*1500 {
 					cond := kv.applyIdentifierMap[id]
 					cond.Signal()
-
 				}
 			}
 
@@ -236,7 +235,7 @@ func (kv *KVServer) trySnapShot() {
 		fmt.Println("snapshot")
 		lastIncludedIndex, lastIncludedTerm := kv.rf.GetLastAppliedMeta()
 
-		snapshotStruct := SnapshotComplex{kv.keyValueMap, kv.identifiersMap}
+		snapshotStruct := raft.SnapshotComplex{kv.identifiersMap, kv.keyValueMap}
 
 		w := new(bytes.Buffer)
 		e := labgob.NewEncoder(w)
