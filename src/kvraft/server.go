@@ -31,6 +31,9 @@ type Op struct {
 	Key   string
 	Value string
 	Type  string
+
+	ClerkID string
+
 	// Order      int
 	Identifier string
 }
@@ -57,7 +60,7 @@ type KVServer struct {
 	timeoutMap map[string]time.Time
 
 	// seen identifiers map
-	identifiersMap map[string]bool
+	identifiersMap map[string]string
 }
 
 // check if the corresponding raft instance is leader
@@ -76,7 +79,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// form the command
 	kv.mu.Lock()
-	op := Op{args.Key, "", "Get", args.Identifier}
+	op := Op{args.Key, "", "Get", args.ID, args.Identifier}
 
 	_, prevTerm, _ := kv.rf.Start(op)
 
@@ -131,7 +134,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// check if the put/append request is already commited in leader's log
 
 	// args.Op is either "Put" or "Append"
-	op := Op{args.Key, args.Value, args.Op, args.Identifier}
+	op := Op{args.Key, args.Value, args.Op, args.ID, args.Identifier}
 
 	_, prevTerm, _ := kv.rf.Start(op)
 
@@ -154,7 +157,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// only deals with sending RPC
 	// fmt.Println(";;;;", kv.me, isLeader, curTerm, prevTerm, time.Now().Sub(kv.timeoutMap[args.Identifier]))
-	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1500 {
+	if !isLeader || curTerm != prevTerm || time.Now().Sub(kv.timeoutMap[args.Identifier]) > time.Millisecond*1000 {
 		reply.Err = ErrWrongLeader
 		delete(kv.applyIdentifierMap, args.Identifier)
 		delete(kv.timeoutMap, args.Identifier)
@@ -184,7 +187,7 @@ func (kv *KVServer) checkApply() {
 
 			// if the index is found
 			theOpStruct := applyMsg.Command.(Op)
-			if _, ok := kv.identifiersMap[theOpStruct.Identifier]; !ok {
+			if prevOpID, ok := kv.identifiersMap[theOpStruct.ClerkID]; !ok || prevOpID != theOpStruct.Identifier {
 				if theOpStruct.Type == "Put" {
 					kv.keyValueMap[theOpStruct.Key] = theOpStruct.Value
 				} else if applyMsg.Command.(Op).Type == "Append" {
@@ -198,7 +201,12 @@ func (kv *KVServer) checkApply() {
 				}
 			}
 
-			kv.identifiersMap[theOpStruct.Identifier] = true
+			if theOpStruct.Type != "Put" {
+				// only put/append needs to be recoreded
+				// kv.identifiersMap[theOpStruct.Identifier] = true
+				kv.identifiersMap[theOpStruct.ClerkID] = theOpStruct.Identifier
+			}
+			// kv.identifiersMap[theOpStruct.Identifier] = theOpStruct.Identifier
 			if cond, ok := kv.applyIdentifierMap[theOpStruct.Identifier]; ok {
 				cond.Signal()
 			}
@@ -210,7 +218,7 @@ func (kv *KVServer) checkApply() {
 			// checktime outs below:
 			kv.mu.Lock()
 			for id, startTime := range kv.timeoutMap {
-				if time.Now().Sub(startTime) > time.Millisecond*1500 {
+				if time.Now().Sub(startTime) > time.Millisecond*1000 {
 					cond := kv.applyIdentifierMap[id]
 					cond.Signal()
 				}
@@ -303,7 +311,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyIdentifierMap = make(map[string]*sync.Cond)
 
-	kv.identifiersMap = make(map[string]bool)
+	// identifiersMap is clerkID -> uniqueOperationID (len 8 string to len 16 string)
+	kv.identifiersMap = make(map[string]string)
 
 	// a dedicated goroutine runs checkApply
 	go func() { kv.checkApply() }()

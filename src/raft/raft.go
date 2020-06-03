@@ -32,7 +32,7 @@ import (
 
 // a helper struct that helps the data comprehension during snapshot
 type SnapshotComplex struct {
-	IdentifiersMap map[string]bool
+	IdentifiersMap map[string]string
 	KeyValueMap    map[string]string
 }
 
@@ -675,7 +675,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = targetCommitIndex + rf.lastIncludedIndex
 	term = rf.currentTerm
 
-	go func() { rf.broadcastEntries() }()
+	// go func() { rf.broadcastEntries() }()
 
 	// Should return immediately
 	rf.mu.Unlock()
@@ -753,7 +753,7 @@ func (rf *Raft) heartBeats() {
 		// rf.printLog()
 		rf.mu.Unlock()
 		// sleep for a while. Limit 10 heartbeats per second
-		time.Sleep(time.Millisecond * 150)
+		time.Sleep(time.Millisecond * 110)
 		rf.mu.Lock()
 		stillLeader = rf.isLeader
 		rf.mu.Unlock()

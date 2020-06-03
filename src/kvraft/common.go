@@ -29,6 +29,9 @@ type PutAppendArgs struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 
+	// clerk ID
+	ID string
+
 	// unique identifiers
 	Identifier string
 }
@@ -43,6 +46,9 @@ type GetArgs struct {
 	Key string
 
 	// You'll have to add definitions here.
+
+	// clerk ID
+	ID string
 
 	// unique identifiers
 	Identifier string

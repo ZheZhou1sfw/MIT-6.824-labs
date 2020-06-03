@@ -13,6 +13,9 @@ type Clerk struct {
 
 	// last kvserver that Clerk remembers to be the leader
 	lastKvServerLeader int
+
+	// unique 8 digit ID
+	id string
 }
 
 func nrand() int64 {
@@ -27,6 +30,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	// You'll have to add code here.
 	ck.lastKvServerLeader = 0
+	ck.id = GenerateRandomString(8)
 
 	return ck
 }
@@ -46,7 +50,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	args := GetArgs{key, GenerateRandomString(8)}
+	args := GetArgs{key, ck.id, GenerateRandomString(16)}
 	reply := GetReply{ErrNoKey, ""}
 	// try forever
 	for {
@@ -81,7 +85,7 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	args := PutAppendArgs{key, value, op, GenerateRandomString(32)}
+	args := PutAppendArgs{key, value, op, ck.id, GenerateRandomString(16)}
 	reply := PutAppendReply{ErrNoKey}
 	// try forever
 	for {
