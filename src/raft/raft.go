@@ -318,11 +318,12 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 			rf.mu.Lock()
 		} else {
 			// fmt.Println("\\\\\\\\", rf.me, rf.isLeader, rf.commitIndex, rf.lastApplied)
+			// for rf.commitIndex > rf.lastApplied && rf.lastApplied < len(rf.log) {
 			for rf.commitIndex > rf.lastApplied {
 				// increment lastApplied
 				rf.lastApplied++
 				// apply log[lastApplied] to state machine
-				// fmt.Println("\\\\\\\\", rf.me, rf.isLeader, rf.commitIndex, rf.lastApplied)
+				// fmt.Println("\\\\\\\\", rf.me, rf.isLeader, rf.commitIndex, rf.lastApplied, len(rf.log), rf.lastIncludedIndex, time.Now().UnixNano())
 				newMsg := ApplyMsg{true, rf.log[rf.lastApplied-1-rf.lastIncludedIndex].Command, rf.lastApplied, "normal"}
 				// fmt.Println("newMSG here", rf.me, newMsg, rf.log, rf.lastIncludedIndex)
 				rf.mu.Unlock()
@@ -442,6 +443,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.resetTimer()
 	}
 
+	// Update on 06/07/2020, this happens when
+	// an outdated broadcastentries comes, we shouldn't proceed.
+	// set reply.Success = false is more secure IMO.
+	if args.LeaderCommit < rf.commitIndex {
+		reply.Success = false
+		reply.ConflictingTerm = -500
+		return
+	}
+
+	// if args.LeaderCommit < rf.commitIndex {
+	// 	reply.Success = false
+	// 	reply.ConflictingTerm = -1
+	// 	reply.IndexOfConflict = len(rf.log) + 1
+	// 	return
+	// }
+
 	// 2B deal with real log entries
 	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
 	// fmt.Println("[[[[", rf.me, rf.isLeader, len(rf.log), args.PrevLogIndex, rf.lastIncludedIndex)
@@ -488,9 +505,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		// Append any new entries not already in the log
-		// fmt.Println("apppppp", rf.me, rf.isLeader, args.PrevLogIndex, i, len(rf.log), len(args.LogEntries))
+		// fmt.Println("apppppp", rf.me, rf.isLeader, args.PrevLogIndex, i, len(rf.log), len(args.LogEntries), args.LeaderCommit, rf.commitIndex)
+
+		// only append new entries not already in the log!
+		// if len(rf.log) < args.PrevLogIndex+len(args.LogEntries) {
 		rf.log = append(rf.log[:args.PrevLogIndex+i-1-rf.lastIncludedIndex], args.LogEntries[i-1:]...)
 		rf.persist()
+		// }
+
 		if args.LeaderCommit > rf.commitIndex {
 			// fmt.Println("<<<<<<", rf.me, rf.isLeader, rf.commitIndex, args.LeaderCommit, args.PrevLogIndex, len(args.LogEntries), len(rf.log), time.Now().UnixNano())
 			rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.LogEntries))
@@ -500,6 +522,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.applyCond.Signal()
 			}
 		}
+
 	}
 	// fmt.Println("End append entries", rf.me, rf.isLeader, rf.log, rf.lastIncludedIndex, rf.commitIndex, args.LeaderCommit, reply)
 
@@ -675,7 +698,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = targetCommitIndex + rf.lastIncludedIndex
 	term = rf.currentTerm
 
-	// go func() { rf.broadcastEntries() }()
+	go func() { rf.broadcastEntries() }()
 
 	// Should return immediately
 	rf.mu.Unlock()
@@ -783,7 +806,9 @@ func (rf *Raft) broadcastEntries() {
 			// if the response is not successful, then there are two possible causes:
 			// 1. This leader is outdated and it should step down immediately (break out of the loop)
 			// 2. AppendEntries fails because of log inconsistency, we decrement nextIndex and retry
-			for !isSuccess && !rf.killed() && rf.isLeader {
+
+			// for !isSuccess && !rf.killed() && rf.isLeader {
+			for !isSuccess && !rf.killed() {
 				// create args structure
 				rf.mu.Lock()
 				// last log index
@@ -901,11 +926,18 @@ func (rf *Raft) broadcastEntries() {
 						// escape the check loop
 						break
 					} else {
-						// because of log inconsistency, decrement nextIndex and retry
-						if reply.ConflictingTerm == -1 {
+						// special cases for outdated broadcastentries
+						if reply.ConflictingTerm == -500 {
+							rf.mu.Unlock()
+							wgg.Done()
+							return
+						} else if reply.ConflictingTerm == -1 {
+							// if reply.ConflictingTerm == -1 {
+							// because of log inconsistency, decrement nextIndex and retry
 							// fmt.Println("threethreethreethreethree")
 							rf.nextIndex[targetID] = reply.IndexOfConflict
 							// fmt.Println("ccccconflict111", rf.me, rf.isLeader, rf.nextIndex)
+
 						} else {
 							// advanced skip nextIndex
 							// search for last entry of the log that has conflicting term
