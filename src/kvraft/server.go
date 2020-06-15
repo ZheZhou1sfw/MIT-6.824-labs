@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sasha-s/go-deadlock"
-
 	"../labgob"
 	"../labrpc"
 	"../raft"
@@ -39,7 +37,7 @@ type Op struct {
 }
 
 type KVServer struct {
-	mu      deadlock.Mutex
+	mu      sync.Mutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
