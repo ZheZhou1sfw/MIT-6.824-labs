@@ -318,7 +318,7 @@ func (rf *Raft) applyCommited(applyCh chan ApplyMsg) {
 		// ready to apply command
 		rf.mu.Lock()
 		// term outdated, should send snapshot to server
-		fmt.Println("?????", rf.me, rf.isLeader, rf.snapshotSent)
+		fmt.Println("?????", rf.me, rf.isLeader, rf.snapshotSent, len(rf.log))
 		if !rf.snapshotSent {
 			// fmt.Println("raft apply snapshot to server via channel")
 
@@ -460,7 +460,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Update on 06/07/2020, this happens when
 	// an outdated broadcastentries comes, we shouldn't proceed.
 	// set reply.Success = false is more secure IMO.
-	if args.LeaderCommit < rf.commitIndex && args.PrevLogIndex < len(rf.log)-1 {
+	if args.LeaderCommit < rf.commitIndex && args.PrevLogIndex < len(rf.log)+rf.lastIncludedIndex-1 {
 		reply.Success = false
 		reply.ConflictingTerm = -500
 		return
@@ -475,7 +475,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 2B deal with real log entries
 	// Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
-	fmt.Println("[[[[", rf.me, rf.isLeader, len(rf.log), args.PrevLogIndex, rf.lastIncludedIndex)
+	fmt.Println("[[[[", rf.me, rf.isLeader, len(rf.log), rf.commitIndex, args.PrevLogIndex, rf.lastIncludedIndex)
 	if len(rf.log)+rf.lastIncludedIndex < args.PrevLogIndex ||
 		(len(rf.log)+rf.lastIncludedIndex > 0 && args.PrevLogIndex > 0 &&
 			((args.PrevLogIndex == rf.lastIncludedIndex && rf.lastIncludedTerm != args.PrevLogTerm) ||
@@ -519,19 +519,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.log = []*LogStruct{}
 				rf.persist()
 			} else if toInsertIndex > 0 && rf.log[toInsertIndex-1].Term != args.LogEntries[i-1].Term {
-				// fmt.Println("dddddd", rf.me, rf.isLeader, len(rf.log), toInsertIndex, i, rf.log[toInsertIndex-1], args.LogEntries[i-1])
+				fmt.Println("dddddd", rf.me, rf.isLeader, len(rf.log), toInsertIndex, i, rf.log[toInsertIndex-1], args.LogEntries[i-1])
 				rf.log = rf.log[:toInsertIndex-1]
 				rf.persist()
 				break
 			}
 		}
 		// Append any new entries not already in the log
-		// fmt.Println("apppppp", rf.me, rf.isLeader, args.PrevLogIndex, i, len(rf.log), len(args.LogEntries), args.LeaderCommit, rf.commitIndex)
+		fmt.Println("apppppp", rf.me, rf.isLeader, args.PrevLogIndex, i, len(rf.log), len(args.LogEntries), args.LeaderCommit, rf.commitIndex, rf.lastIncludedIndex)
 
 		// only append new entries not already in the log!
 		// if len(rf.log) < args.PrevLogIndex+len(args.LogEntries) {
-		rf.log = append(rf.log[:args.PrevLogIndex+i-1-rf.lastIncludedIndex], args.LogEntries[i-1:]...)
-		rf.persist()
+		if len(args.LogEntries) > 0 {
+			rf.log = append(rf.log[:args.PrevLogIndex+i-1-rf.lastIncludedIndex], args.LogEntries[i-1:]...)
+			rf.persist()
+		}
+
 		// }
 
 		if args.LeaderCommit > rf.commitIndex {
