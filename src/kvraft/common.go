@@ -12,6 +12,12 @@ const (
 	ErrWrongLeader = "ErrWrongLeader"
 )
 
+// // a helper struct that helps the data comprehension during snapshot
+// type SnapshotComplex struct {
+// 	KeyValueMap    map[string]string
+// 	IdentifiersMap map[string]bool
+// }
+
 type Err string
 
 // Put or Append
@@ -22,6 +28,9 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	// clerk ID
+	ID string
 
 	// unique identifiers
 	Identifier string
@@ -37,6 +46,9 @@ type GetArgs struct {
 	Key string
 
 	// You'll have to add definitions here.
+
+	// clerk ID
+	ID string
 
 	// unique identifiers
 	Identifier string
